@@ -1,0 +1,215 @@
+% =====================================================================
+%  couverture.tex — Paramètres de l'examen, page d'ouverture, en-têtes
+%
+%  Dans main.tex :
+%    \ExamSetup{ title = ..., course = ..., code = ..., ... }
+%    \Instructions{ \item ... \item ... }
+%    \CoverPage
+%
+%  Contenu de la couverture selon le mode :
+%    questionnaire : infos du cours, consignes, barème
+%    cahier        : infos du cours, identification, consignes du cahier,
+%                    barème avec colonne « Résultat »
+%    corrige       : comme le questionnaire, avec la mention « Corrigé »
+% =====================================================================
+
+\ExplSyntaxOn
+
+% --- Paramètres -------------------------------------------------------
+\keys_define:nn { exam / setup }
+  {
+    title       .tl_gset:N = \g_exam_title_tl,
+    course      .tl_gset:N = \g_exam_course_tl,
+    code        .tl_gset:N = \g_exam_code_tl,
+    groups      .clist_gset:N = \g_exam_groups_clist,
+    teacher     .clist_gset:N = \g_exam_teacher_clist,
+    teacher-feminine .bool_gset:N = \g_exam_teacher_feminine_bool,
+    session     .tl_gset:N = \g_exam_session_tl,
+    date        .tl_gset:N = \g_exam_date_tl,
+    duration    .tl_gset:N = \g_exam_duration_tl,
+    weight      .tl_gset:N = \g_exam_weight_tl,
+    logo        .tl_gset:N = \g_exam_logo_tl,
+    logo        .initial:n = Logo_CM_couleur_Web_grand.jpg,
+    title       .initial:n = Examen,
+  }
+\NewDocumentCommand \ExamSetup { m }
+  { \keys_set:nn { exam / setup } {#1} }
+
+\tl_new:N \g_exam_instructions_tl
+\tl_new:N \g_exam_answer_sheet_instructions_tl
+\tl_gset:Nn \g_exam_answer_sheet_instructions_tl
+  {
+    \item Inscrivez~votre~nom~et~votre~prénom~ci-dessus.
+    \item Seules~les~réponses~inscrites~dans~ce~cahier~seront~corrigées.
+  }
+\NewDocumentCommand \Instructions            { +m } { \tl_gset:Nn \g_exam_instructions_tl {#1} }
+\NewDocumentCommand \AnswerSheetInstructions { +m } { \tl_gset:Nn \g_exam_answer_sheet_instructions_tl {#1} }
+
+% --- En-têtes et pieds de page ----------------------------------------
+% En-tête : Automne 2026 — 420-XXX-MA — Titre de l'examen (valeurs vides omises)
+\seq_new:N \l__exam_header_seq
+\cs_new_protected:Npn \__exam_header_id:
+  {
+    \seq_clear:N \l__exam_header_seq
+    \tl_if_empty:NF \g_exam_session_tl { \seq_put_right:NV \l__exam_header_seq \g_exam_session_tl }
+    \tl_if_empty:NF \g_exam_code_tl    { \seq_put_right:NV \l__exam_header_seq \g_exam_code_tl }
+    \tl_if_empty:NF \g_exam_title_tl   { \seq_put_right:NV \l__exam_header_seq \g_exam_title_tl }
+    \seq_use:Nn \l__exam_header_seq { ~—~ }
+  }
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{ \small \__exam_header_id: }
+\fancyhead[R]{ \small \DocumentName }
+\fancyfoot[C]{ \small Page~\thepage{}~de~\pageref{LastPage} }
+\renewcommand{\headrulewidth}{0.4pt}
+
+\fancypagestyle{cover}
+  {
+    \fancyhf{}
+    \fancyfoot[C]{ \small Page~\thepage{}~de~\pageref{LastPage} }
+    \renewcommand{\headrulewidth}{0pt}
+  }
+
+% --- Éléments de la couverture ----------------------------------------
+% Titre de section de la couverture
+\cs_new_protected:Npn \__exam_cover_section:n #1
+  {
+    \par \addvspace { 1.6em }
+    \noindent { \large \bfseries #1 } \par \nopagebreak
+  }
+
+% Case du tableau d'informations (omise si la valeur est vide)
+\cs_new_protected:Npn \__exam_info_row:nN #1#2
+  {
+    \tl_if_empty:NF #2
+      { \seq_put_right:Nn \l__exam_info_seq { \textbf{#1} & #2 } }
+  }
+\seq_new:N \l__exam_info_seq
+\tl_new:N  \l__exam_info_tl
+
+% Case pour une liste : étiquette au pluriel (#2) s'il y a plusieurs
+% éléments, sinon au singulier (#1) ; éléments joints par « , » et « et »
+\cs_new_protected:Npn \__exam_info_list_row:nnN #1#2#3
+  {
+    \clist_if_empty:NF #3
+      {
+        \tl_set:Ne \l_tmpa_tl { \clist_use:Nnnn #3 { ~et~ } { ,~ } { ~et~ } }
+        \int_compare:nNnTF { \clist_count:N #3 } > { 1 }
+          { \tl_set:Nn \l_tmpb_tl {#2} }
+          { \tl_set:Nn \l_tmpb_tl {#1} }
+        \seq_put_right:Ne \l__exam_info_seq
+          { \exp_not:N \textbf { \exp_not:V \l_tmpb_tl } & \exp_not:V \l_tmpa_tl }
+      }
+  }
+
+\cs_new_protected:Npn \__exam_cover_info:
+  {
+    \seq_clear:N \l__exam_info_seq
+    \bool_if:NTF \g_exam_teacher_feminine_bool
+      { \__exam_info_list_row:nnN { Enseignante } { Enseignantes } \g_exam_teacher_clist }
+      { \__exam_info_list_row:nnN { Enseignant }  { Enseignants }  \g_exam_teacher_clist }
+    \__exam_info_list_row:nnN { Groupe } { Groupes } \g_exam_groups_clist
+    \__exam_info_row:nN { Session }       \g_exam_session_tl
+    \__exam_info_row:nN { Date }          \g_exam_date_tl
+    \__exam_info_row:nN { Durée }         \g_exam_duration_tl
+    \__exam_info_row:nN { Pondération }   \g_exam_weight_tl
+    % Deux informations par ligne
+    \tl_clear:N \l__exam_info_tl
+    \int_zero:N \l_tmpa_int
+    \seq_map_inline:Nn \l__exam_info_seq
+      {
+        \int_incr:N \l_tmpa_int
+        \tl_put_right:Nn \l__exam_info_tl {##1}
+        \int_if_odd:nTF { \l_tmpa_int }
+          { \tl_put_right:Nn \l__exam_info_tl { & } }
+          { \tl_put_right:Nn \l__exam_info_tl { \\ } }
+      }
+    \int_if_odd:nT { \l_tmpa_int }
+      { \tl_put_right:Nn \l__exam_info_tl { & \\ } }
+    \group_begin:
+      \renewcommand { \arraystretch } { 1.3 }
+      \begin{tabularx} { \linewidth } { @{} l X l X @{} }
+        \l__exam_info_tl
+      \end{tabularx}
+    \group_end:
+  }
+
+% Champs à remplir : étiquette suivie d'une ligne
+\cs_new_protected:Npn \__exam_id_row:nn #1#2
+  {
+    #1 & \rule { 0pt } { 2.2em } \hrulefill &
+    #2 & \hrulefill \\
+  }
+
+\cs_new_protected:Npn \__exam_cover_identification:
+  {
+    \noindent
+    \begin{tabularx} { \linewidth }
+      { @{} l @{\hspace{0.5em}} X @{\hspace{2em}} l @{\hspace{0.5em}} X @{} }
+      \__exam_id_row:nn { Nom } { Prénom }
+    \end{tabularx}
+  }
+
+\cs_new_protected:Npn \__exam_cover_banner:
+  {
+    \exam_if_mode:nTF { answerkey }
+      {
+        \colorbox { black }
+          {
+            \textcolor { white }
+              { \Large \bfseries \ CORRIGÉ \ }
+          }
+      }
+      {
+        { \large \bfseries \addfontfeature { LetterSpace = 12 }
+          \text_uppercase:n { \DocumentName } }
+      }
+  }
+
+% --- Page de couverture -----------------------------------------------
+\NewDocumentCommand \CoverPage { }
+  {
+    \thispagestyle { cover }
+    \noindent
+    \includegraphics [ width = 6.5cm ] { \g_exam_logo_tl }
+    \par \vspace { 0.8cm }
+
+    \begin{center}
+      { \Huge \bfseries \g_exam_title_tl \par }
+      \vspace { 0.6em }
+      { \LARGE \g_exam_course_tl \par }
+      \tl_if_empty:NF \g_exam_code_tl
+        { \vspace { 0.2em } { \large \g_exam_code_tl \par } }
+      \vspace { 0.8em }
+      \__exam_cover_banner:
+    \end{center}
+
+    \__exam_cover_info:
+
+    \exam_if_mode:nTF { answersheet }
+      {
+        \__exam_cover_section:n { Identification }
+        \__exam_cover_identification:
+        \__exam_cover_section:n { Consignes }
+        \begin{itemize} [ itemsep = 0pt, parsep = 0pt, topsep = 0pt ]
+          \g_exam_answer_sheet_instructions_tl
+        \end{itemize}
+      }
+      {
+        \tl_if_empty:NF \g_exam_instructions_tl
+          {
+            \__exam_cover_section:n { Consignes }
+            \begin{itemize} [ itemsep = 0pt, parsep = 0pt, topsep = 0pt ]
+              \g_exam_instructions_tl
+            \end{itemize}
+          }
+      }
+
+    \__exam_cover_section:n { Barème }
+    \vspace { 0.3em }
+    \noindent \PointsTable
+    \clearpage
+  }
+
+\ExplSyntaxOff

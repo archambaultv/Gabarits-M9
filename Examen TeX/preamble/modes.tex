@@ -1,0 +1,73 @@
+% =====================================================================
+%  Le même fichier main.tex produit trois documents :
+%    questionnaire       énoncés et choix de réponses
+%    cahier de réponses  grille QCM et lignes de réponse, sans les énoncés
+%    corrigé             le cahier de réponses, page pour page, avec les
+%                        solutions
+%
+%  Le mode est déduit du nom du fichier compilé (voir le dossier cibles/) :
+%  il doit contenir « questionnaire », « cahier_reponses » ou « corrige ».
+%
+%  Ce fichier fournit les commandes LaTeX suivantes :
+%    \OnlyQuestionnaire{...}  seulement dans le questionnaire
+%    \OnlyAnswerSheet{...}    seulement dans le cahier de réponses
+%    \OnlyAnswerKey{...}      seulement dans le corrigé
+%    \DocumentName            nom du document affiché dans l'en-tête et sur
+%                             la couverture
+% =====================================================================
+
+\ExplSyntaxOn
+
+\str_new:N \g_exam_mode_str
+\str_gset:Nn \g_exam_mode_str { questionnaire }
+
+\AddToHook { begindocument / before }
+  {
+    \str_if_in:NnTF \c_sys_jobname_str { corrige }
+      { \str_gset:Nn \g_exam_mode_str { answerkey } }
+      {
+        \str_if_in:NnTF \c_sys_jobname_str { cahier_reponses }
+          { \str_gset:Nn \g_exam_mode_str { answersheet } }
+          {
+            \str_if_in:NnT \c_sys_jobname_str { questionnaire }
+              { \str_gset:Nn \g_exam_mode_str { questionnaire } }
+          }
+      }
+    \typeout { Examen~:~mode~«~\g_exam_mode_str\space~» }
+  }
+
+% --- Tests utilisés par le gabarit ------------------------------------
+\prg_new_conditional:Npnn \exam_if_mode:n #1 { p, T, F, TF }
+  {
+    \str_if_eq:VnTF \g_exam_mode_str {#1}
+      { \prg_return_true: } { \prg_return_false: }
+  }
+
+% Cahier ou corrigé : même mise en page (feuille de réponses)
+\prg_new_conditional:Npnn \exam_if_answer_layout: { p, T, F, TF }
+  {
+    \bool_lazy_or:nnTF
+      { \exam_if_mode_p:n { answersheet } } { \exam_if_mode_p:n { answerkey } }
+      { \prg_return_true: } { \prg_return_false: }
+  }
+
+% --- Commandes offertes dans les questions ---------------------------
+%  \OnlyQuestionnaire{...}  seulement dans le questionnaire
+%  \OnlyAnswerSheet{...}    seulement dans le cahier de réponses
+%  \OnlyAnswerKey{...}      seulement dans le corrigé
+\NewDocumentCommand \OnlyQuestionnaire { +m } { \exam_if_mode:nT { questionnaire } {#1} }
+\NewDocumentCommand \OnlyAnswerSheet   { +m } { \exam_if_mode:nT { answersheet } {#1} }
+\NewDocumentCommand \OnlyAnswerKey     { +m } { \exam_if_mode:nT { answerkey } {#1} }
+
+% Nom du document affiché dans l'en-tête et sur la couverture
+\NewExpandableDocumentCommand \DocumentName { }
+  {
+    \str_case:Vn \g_exam_mode_str
+      {
+        { questionnaire } { Questionnaire }
+        { answersheet }   { Cahier~de~réponses }
+        { answerkey }     { Corrigé }
+      }
+  }
+
+\ExplSyntaxOff

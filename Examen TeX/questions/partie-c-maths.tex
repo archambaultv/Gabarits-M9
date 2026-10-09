@@ -1,0 +1,49 @@
+% =====================================================================
+%  Partie C — Mathématiques (exemple pour Sciences de la nature)
+%
+%  Maths dans le texte : $S_n = \sum_{k=1}^{n} \frac{1}{k^2}$
+%  Maths centrées      : \[ x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a} \]
+%  Les maths fonctionnent partout : énoncé, choix de QCM et solution.
+% =====================================================================
+
+\exampart{Programmation scientifique}
+
+\begin{instructions}
+  Les questions de cette partie portent sur la traduction de formules
+  mathématiques en Python. Le module \codeinline{math} est importé.
+\end{instructions}
+
+% --- QCM avec des maths dans les choix -------------------------------
+\begin{mcq}
+  Quelle formule la fonction \codeinline{f(x, n)} calcule-t-elle ?
+\begin{code}{python}
+def f(x, n):
+    total = 0
+    for k in range(n + 1):
+        total += x**k / math.factorial(k)
+    return total
+\end{code}
+  \begin{choices}[columns=2]
+    \correct $\displaystyle \sum_{k=0}^{n} \frac{x^k}{k!}$
+    \wrong   $\displaystyle \sum_{k=1}^{n} \frac{x^k}{k!}$
+    \wrong   $\displaystyle \sum_{k=0}^{n-1} \frac{x^k}{k!}$
+    \wrong   $\displaystyle \prod_{k=0}^{n} \frac{x^k}{k!}$
+  \end{choices}
+  % range(n + 1) va de 0 à n inclusivement ; total += … est une somme.
+\end{mcq}
+
+% --- Question : traduire une formule ---------------------------------
+\begin{question}[points=2, lines=4]
+  Les racines de l'équation $ax^2 + bx + c = 0$ sont données par
+  \[ x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}, \qquad a \neq 0, \quad b^2 - 4ac \geq 0. \]
+  Écrivez les deux instructions Python qui affectent ces racines aux
+  variables \codeinline{x1} et \codeinline{x2}.
+  \begin{solution}
+\begin{code}[numbers=none]{python}
+x1 = (-b + math.sqrt(b**2 - 4*a*c)) / (2*a)
+x2 = (-b - math.sqrt(b**2 - 4*a*c)) / (2*a)
+\end{code}
+    Les parenthèses autour de \codeinline{2*a} sont essentielles :
+    \codeinline{y / 2*a} calcule $(y/2) \cdot a$ et non $y/(2a)$.
+  \end{solution}
+\end{question}

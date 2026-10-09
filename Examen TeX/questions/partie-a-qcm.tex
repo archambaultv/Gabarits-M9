@@ -1,0 +1,126 @@
+% =====================================================================
+%  Partie A — Questions à choix multiples
+%
+%  Modèle :
+%    \begin{mcq}[points=1]
+%      Énoncé (texte, code, image…)
+%      \begin{choices}[columns=2]    % columns : facultatif
+%        \wrong   ...
+%        \correct ...                % bonne réponse (case noircie au corrigé)
+%      \end{choices}
+%    \end{mcq}
+% =====================================================================
+
+\exampart{Choix multiples}
+
+\begin{instructions}
+  Choisissez la bonne réponse et cochez-la dans la grille du cahier de
+  réponses.
+\end{instructions}
+
+% --- Question sans code ---------------------------------------------
+\begin{mcq}
+  Quelle balise HTML crée un lien hypertexte vers une autre page ?
+  \begin{choices}[columns=4]
+    \wrong   \codeinline{<link>}
+    \correct \codeinline{<a>}
+    \wrong   \codeinline{<href>}
+    \wrong   \codeinline{<nav>}
+  \end{choices}
+\end{mcq}
+
+% --- Python ---------------------------------------------------------
+\begin{mcq}
+  Qu'affiche le programme Python suivant ?
+\begin{code}{python}
+def somme_pairs(valeurs):
+    """Additionne les nombres pairs de la liste."""
+    total = 0
+    for v in valeurs:
+        if v % 2 == 0:
+            total += v
+    return total
+
+print(somme_pairs([1, 2, 3, 4, 5, 6]))  # Résultat affiché ?
+\end{code}
+  \begin{choices}[columns=4]
+    \wrong   \codeinline{21}
+    \correct \codeinline{12}
+    \wrong   \codeinline{9}
+    \wrong   \codeinline{6}
+  \end{choices}
+\end{mcq}
+
+% --- JavaScript -----------------------------------------------------
+\begin{mcq}
+  Que contient la constante \codeinline{resultat} après l'exécution de ce code ?
+\begin{code}{javascript}
+const nombres = [3, 1, 4, 1, 5];
+const resultat = nombres
+  .filter(n => n > 2)
+  .map(n => n * 2);
+console.log(resultat);
+\end{code}
+  \begin{choices}[columns=2]
+    \wrong   \codeinline{[6, 2, 8, 2, 10]}
+    \correct \codeinline{[6, 8, 10]}
+    \wrong   \codeinline{[3, 4, 5]}
+    \wrong   \codeinline{[8, 10]}
+  \end{choices}
+\end{mcq}
+
+% --- HTML + CSS -----------------------------------------------------
+\begin{mcq}
+  Soit le fragment HTML et la feuille de style ci-dessous. De quelle
+  couleur le texte « Attention ! » est-il affiché ?
+\begin{code}{html}
+<p id="message" class="alerte">Attention !</p>
+\end{code}
+\begin{code}{css}
+/* Feuille de style */
+p        { color: black; }
+.alerte  { color: orange; }
+#message { color: red; }
+p.alerte { color: blue; }
+\end{code}
+  \begin{choices}[columns=4]
+    \wrong   Noir
+    \wrong   Orange
+    \correct Rouge
+    \wrong   Bleu
+  \end{choices}
+  % Le sélecteur d'identifiant #message a la plus grande spécificité.
+\end{mcq}
+
+% --- Node.js ---------------------------------------------------------
+\begin{mcq}
+  Dans quel ordre les lettres sont-elles affichées par ce programme
+  Node.js ? (Le fichier \codeinline{donnees.txt} existe.)
+\begin{code}{nodejs}
+const fs = require('fs');
+
+console.log('A');
+fs.readFile('donnees.txt', 'utf8', (err, data) => {
+  console.log('B');
+});
+console.log('C');
+\end{code}
+  \begin{choices}[columns=4]
+    \wrong   A, B, C
+    \correct A, C, B
+    \wrong   B, A, C
+    \wrong   C, A, B
+  \end{choices}
+  % readFile est asynchrone : son rappel s'exécute après le code synchrone.
+\end{mcq}
+
+% --- Java : choix sous forme de code ---------------------------------
+\begin{mcq}
+  Laquelle de ces déclarations Java compile sans erreur ?
+  \begin{choices}
+    \wrong   \codeinline{int x = "5";}
+    \wrong   \codeinline{String s = 'abc';}
+    \correct \codeinline{double d = 3;}
+    \wrong   \codeinline{boolean b = 1;}
+  \end{choices}
+\end{mcq}

@@ -1,0 +1,53 @@
+% --- Langue et polices ------------------------------------------------
+\usepackage[french]{babel}
+\usepackage{fontspec}
+
+% Polices fournies avec TeX Live (aucune installation requise) :
+% Source Sans (texte), Source Code (code), Lete Sans Math (mathématiques,
+% sans empattements, de proportions proches de Source Sans)
+\usepackage{amsmath}
+\usepackage{unicode-math}
+\setmainfont{SourceSansPro}[
+  Extension      = .otf,
+  UprightFont    = *-Regular,
+  BoldFont       = *-Bold,
+  ItalicFont     = *-RegularIt,
+  BoldItalicFont = *-BoldIt,
+]
+\setmonofont{SourceCodePro}[
+  Extension      = .otf,
+  UprightFont    = *-Regular,
+  BoldFont       = *-Bold,
+  ItalicFont     = *-RegularIt,
+  BoldItalicFont = *-BoldIt,
+  Scale          = MatchLowercase,
+]
+\setmathfont{LeteSansMath.otf}
+
+% --- Mise en page -----------------------------------------------------
+\usepackage[letterpaper, margin=2cm, top=2.5cm, bottom=2.5cm, headheight=14pt]{geometry}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.5em}
+
+% --- Paquets utilitaires ----------------------------------------------
+\usepackage{xcolor}
+\usepackage{graphicx}
+\graphicspath{{img/}}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{booktabs}          % tableaux sans filets verticaux
+\usepackage{enumitem}
+\usepackage{multicol}
+\usepackage{needspace}
+\usepackage{lastpage}          % « Page x de y »
+\usepackage{fancyhdr}
+\usepackage[most]{tcolorbox}   % encadrés du corrigé
+\usepackage{listings}          % code source
+
+\setlist{itemsep=0.2em, topsep=0.3em}
+
+% --- Fichiers du gabarit ----------------------------------------------
+\input{preamble/modes}
+\input{preamble/code}
+\input{preamble/questions}
+\input{preamble/couverture}

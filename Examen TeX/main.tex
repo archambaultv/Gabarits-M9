@@ -1,0 +1,39 @@
+\documentclass[11pt]{article}
+\input{preamble/preamble}
+
+% --- Informations de l'examen ----------------------------------------
+% Une valeur laissée vide n'est pas affichée sur la couverture.
+% Mettre entre accolades une valeur qui contient une virgule.
+\ExamSetup{
+  title       = Titre de l'examen,
+  course      = Nom du cours,
+  code        = 420-XXX-MA,
+  groups      = 1,                   % {1, 2, 3} pour plusieurs groupes
+  teacher     = Prénom Nom,          % liste possible : {Nom 1, Nom 2}
+  teacher-feminine = false,          % true : « Enseignante(s) »
+  session     = Automne 2026,
+  date        = 15 décembre 2026,
+  duration    = 3 heures,
+  weight      = 30\,\% de la note finale,
+}
+
+% Consignes du questionnaire
+\Instructions{
+  \item Aucune documentation permise.
+  \item Inscrivez toutes vos réponses dans le cahier de réponses.
+  \item Remettez le questionnaire avec le cahier de réponses.
+  \item Le plagiat et la fraude entraînent la note zéro.
+  \item Les téléphones ou autres appareils intelligents doivent être rangés.
+}
+
+% =====================================================================
+\begin{document}
+
+\CoverPage
+
+% Ajouter les inputs des fichiers de questions ici.
+\input{questions/partie-a-qcm}
+\input{questions/partie-b-courtes}
+\input{questions/partie-c-maths}
+
+\end{document}

@@ -1,0 +1,158 @@
+% =====================================================================
+%  code.tex — Coloration syntaxique (listings), pensée pour le noir et blanc
+%
+%  Styles disponibles : python, javascript, nodejs, html, css, java
+%
+%  Utilisation dans une question :
+%
+%    \begin{code}{python}              % bloc de code
+%    print("Bonjour")
+%    \end{code}
+%
+%    \begin{code}[numbers=none]{css}   % options listings entre crochets
+%    ...
+%    \end{code}
+%
+%    \codefile{java}{questions/code/Compte.java}      % depuis un fichier
+%    \codefile[firstline=3, lastline=10]{java}{...}   % extrait de lignes
+%
+%    \codeinline{x = 3}               % code dans le texte
+%
+%  Règles d'impression : mots-clés en gras, commentaires en italique gris,
+%  chaînes en gris foncé.
+% =====================================================================
+
+% --- Teintes de gris (noms requis : « ! » pose problème dans listings) -
+\colorlet{codecomment}{black!60}
+\colorlet{codestring}{black!75}
+\colorlet{codenumber}{black!55}
+\colorlet{codeframe}{black!45}
+\colorlet{codearrow}{black!50}
+\colorlet{codeattribute}{black!70}
+
+% --- Style commun -----------------------------------------------------
+\lstdefinestyle{base}{
+  basicstyle        = \ttfamily\small,
+  keywordstyle      = \bfseries,
+  commentstyle      = \itshape\color{codecomment},
+  stringstyle       = \color{codestring},
+  numbers           = left,
+  numberstyle       = \scriptsize\color{codenumber},
+  numbersep         = 8pt,
+  xleftmargin       = 2.2em,
+  framexleftmargin  = 0.3em,
+  frame             = single,
+  framerule         = 0.4pt,
+  rulecolor         = \color{codeframe},
+  columns           = fullflexible,
+  keepspaces        = true,
+  showstringspaces  = false,
+  tabsize           = 4,
+  upquote           = true,
+  extendedchars     = true,
+  breaklines        = true,
+  postbreak         = \mbox{\textcolor{codearrow}{$\hookrightarrow$}\space},
+  aboveskip         = 0.6em,
+  belowskip         = 0.6em,
+}
+
+% --- Définitions de langages absents de listings ---------------------
+\lstdefinelanguage{JavaScript}{
+  morekeywords = {async, await, break, case, catch, class, const, continue,
+    default, delete, do, else, export, extends, finally, for, from,
+    function, if, import, in, instanceof, let, new, of, return, static,
+    super, switch, this, throw, try, typeof, var, void, while, yield,
+    true, false, null, undefined},
+  sensitive    = true,
+  morecomment  = [l]{//},
+  morecomment  = [s]{/*}{*/},
+  morestring   = [b]',
+  morestring   = [b]",
+  morestring   = [b]`,
+}
+
+\lstdefinelanguage{CSS}{
+  alsoletter   = {-@!},
+  morekeywords = {color, background, background-color, background-image,
+    border, border-radius, border-color, border-width, border-style,
+    margin, margin-top, margin-right, margin-bottom, margin-left,
+    padding, padding-top, padding-right, padding-bottom, padding-left,
+    width, height, max-width, min-width, max-height, min-height,
+    display, position, top, right, bottom, left, z-index, float, clear,
+    font, font-family, font-size, font-weight, font-style, line-height,
+    text-align, text-decoration, text-transform, letter-spacing,
+    flex, flex-direction, flex-wrap, justify-content, align-items, gap,
+    grid, grid-template-columns, grid-template-rows, grid-area,
+    opacity, overflow, visibility, cursor, transition, transform,
+    animation, box-shadow, box-sizing, content, list-style},
+  morekeywords = [2]{@media, @import, @keyframes, @font-face, !important},
+  sensitive    = false,
+  morecomment  = [s]{/*}{*/},
+  morestring   = [b]",
+  morestring   = [b]',
+}
+
+\lstdefinelanguage{HTML5}[]{HTML}{
+  morekeywords = {header, nav, main, section, article, aside, footer,
+    figure, figcaption, video, audio, source, canvas, template,
+    button, label, select, option, textarea, output, progress,
+    charset, lang, placeholder, required, defer, async, type,
+    for, data, alt, src, href, rel, id, class, name, value},
+  sensitive    = false,
+}
+
+% --- Styles par langage ----------------------------------------------
+\lstdefinestyle{python}{
+  style        = base,
+  language     = Python,
+  morekeywords = {True, False, None, async, await, nonlocal, with, as,
+                  assert, yield, lambda},
+}
+
+\lstdefinestyle{javascript}{
+  style    = base,
+  language = JavaScript,
+}
+
+% Node.js = JavaScript + quelques identifiants propres à Node
+\lstdefinestyle{nodejs}{
+  style        = javascript,
+  morekeywords = {require, module, exports, process},
+}
+
+\lstdefinestyle{html}{
+  style            = base,
+  language         = HTML5,
+  tagstyle         = \bfseries,
+  keywordstyle     = \color{codeattribute},
+  markfirstintag   = true,
+  usekeywordsintag = true,
+}
+
+\lstdefinestyle{css}{
+  style         = base,
+  language      = CSS,
+  keywordstyle  = \bfseries,
+  keywordstyle  = [2]\bfseries\itshape,
+}
+
+\lstdefinestyle{java}{
+  style        = base,
+  language     = Java,
+  morekeywords = {var, record, sealed, permits, yield},
+}
+
+\lstset{style=base}
+
+% --- Commandes pour les questions ------------------------------------
+% Bloc de code :  \begin{code}[options]{langage} ... \end{code}
+\lstnewenvironment{code}[2][]{\lstset{style=#2, #1}}{}
+
+% Code depuis un fichier : \codefile[options]{langage}{chemin}
+\NewDocumentCommand{\codefile}{O{} m m}{%
+  \lstinputlisting[style=#2, #1]{#3}%
+}
+
+% Code dans le texte : \codeinline{...} ou \codeinline|...|
+% (ne pas l'utiliser dans l'argument d'une autre commande)
+\NewDocumentCommand{\codeinline}{v}{\texttt{#1}}

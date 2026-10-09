@@ -1,0 +1,47 @@
+# Dossiers de compilation latexmk ($out_dir)
+build/
+
+# Fichiers auxiliaires LaTeX
+*.aux
+*.log
+*.out
+*.toc
+*.lof
+*.lot
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.synctex(busy)
+*.synctex
+*.xdv
+*.dvi
+*.nav
+*.snm
+*.vrb
+*.bbl
+*.bcf
+*.blg
+*.run.xml
+*.idx
+*.ilg
+*.ind
+*.glo
+*.gls
+*.glg
+*.ist
+*.acn
+*.acr
+*.alg
+*.thm
+*.listing
+*.pyg
+_minted*/
+*.pytxcode
+pythontex-files-*/
+*-blx.bib
+*.auxlock
+*-converted-to.*
+
+# Éditeurs et système
+*~
+.DS_Store

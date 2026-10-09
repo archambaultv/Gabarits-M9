@@ -1,0 +1,108 @@
+% =====================================================================
+%  Partie B — Questions à réponse courte
+%
+%  Modèle :
+%    \begin{question}[points=3, lines=6]  % lines : espace dans le cahier
+%    \begin{question}[points=3, box=6cm]  % cadre vide (ex. écrire du code)
+%      Énoncé : verbe d'action du niveau taxonomique visé (Bloom),
+%      qui indique le type de réponse attendu (Nommez, Expliquez,
+%      Déterminez, Comparez, Écrivez…)
+%      \begin{solution}
+%        Réponse attendue (corrigé seulement)
+%      \end{solution}
+%    \end{question}
+%
+%  Code tiré d'un fichier :
+%    \codefile{java}{questions/code/Compte.java}
+%    \codefile[firstline=8, lastline=13]{java}{questions/code/Compte.java}
+% =====================================================================
+
+\exampart{Questions à réponse courte}
+
+\begin{instructions}
+  Répondez dans l'espace prévu du cahier de réponses.
+\end{instructions}
+
+% --- Java, depuis un fichier, avec numéros de ligne ------------------
+\begin{question}[points=3, lines=6]
+  L'exécution de la méthode \codeinline{main} de la classe suivante
+  provoque une erreur.
+  \codefile{java}{questions/code/Compte.java}
+  \begin{enumerate}[label=\alph*)]
+    \item Expliquez cette erreur dans vos mots.
+    \item Indiquez la ligne où l'erreur est déclenchée.
+  \end{enumerate}
+  \begin{solution}
+    \begin{enumerate}[label=\alph*)]
+      \item Le second retrait (80\,\$) dépasse le solde (70\,\$) :
+            une \codeinline{IllegalArgumentException} « Solde insuffisant »
+            est levée et la ligne 23 n'est jamais exécutée.
+      \item L'exception est levée à la ligne 10, lors de l'appel de la
+            ligne 22.
+    \end{enumerate}
+  \end{solution}
+\end{question}
+
+% --- HTML + CSS : écrire du code -------------------------------------
+\OnlyQuestionnaire{\clearpage}   % évite de couper le code entre deux pages
+\begin{question}[points=2, box=6cm]
+  Voici le menu d'une page Web.
+\begin{code}{html}
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>Menu</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav class="menu">
+    <a href="index.html">Accueil</a>
+    <a href="cours.html">Cours</a>
+    <a href="contact.html">Contact</a>
+  </nav>
+</body>
+</html>
+\end{code}
+  Écrivez les règles CSS qui affichent les liens du menu sur une même
+  ligne, espacés de \codeinline{1rem}, sans soulignement.
+  \begin{solution}
+\begin{code}[numbers=none]{css}
+.menu {
+  display: flex;
+  gap: 1rem;
+}
+.menu a {
+  text-decoration: none;
+}
+\end{code}
+  \end{solution}
+\end{question}
+
+% --- Node.js, depuis un fichier --------------------------------------
+\begin{question}[points=2, lines=4]
+  Le serveur Node.js suivant est démarré.
+  \codefile{nodejs}{questions/code/serveur.js}
+  Déterminez le code d'état HTTP et le texte que reçoit le navigateur
+  pour une requête vers \codeinline{/cours}.
+  \begin{solution}
+    Code 404, texte « Introuvable » (l'URL n'est pas \codeinline{/}).
+  \end{solution}
+\end{question}
+
+% --- Python : écrire une fonction ------------------------------------
+\begin{question}[points=4, box=7cm]
+  Écrivez une fonction Python \codeinline{moyenne(notes)} qui retourne la
+  moyenne d'une liste de nombres. Si la liste est vide, la fonction
+  retourne \codeinline{None}.
+  \begin{solution}
+\begin{code}[numbers=none]{python}
+def moyenne(notes):
+    if len(notes) == 0:
+        return None
+    return sum(notes) / len(notes)
+\end{code}
+    Critères : cas de la liste vide (1 pt), calcul correct (2 pts),
+    valeur retournée et non affichée (1 pt).
+  \end{solution}
+\end{question}

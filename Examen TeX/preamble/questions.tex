@@ -1,0 +1,499 @@
+% =====================================================================
+%  questions.tex — Parties, QCM, questions courtes, solutions et points
+%
+%  \exampart{Titre}
+%      Ouvre une partie (A, B, C…) sur une nouvelle page. Les points de la
+%      partie sont calculés automatiquement.
+%
+%  \begin{instructions}
+%    Consignes de la partie : un ou plusieurs paragraphes.
+%  \end{instructions}
+%      À placer après \exampart. N'apparaît que dans le questionnaire.
+%
+%  \begin{mcq}[points=1]          % [breakable] : peut être coupé entre deux pages
+%    Énoncé…
+%    \begin{choices}[columns=2]    % columns : facultatif
+%      \wrong   Réponse fausse
+%      \correct Bonne réponse
+%    \end{choices}
+%  \end{mcq}
+%
+%  \begin{question}[points=3, lines=6]    % ou box=6cm : cadre vide
+%    Énoncé…     % verbe d'action du niveau de Bloom visé : Expliquez…
+%    \begin{solution}
+%      Réponse attendue : imprimée dans le corrigé, par-dessus les
+%      lignes ou dans le cadre (prévoir assez d'espace)
+%    \end{solution}
+%  \end{question}
+%
+%  Le corrigé a exactement la mise en page du cahier : mêmes pages,
+%  même grille (bonnes cases noircies), mêmes espaces de réponse.
+%
+%  Points et totaux : il faut compiler deux fois (latexmk le fait seul).
+% =====================================================================
+
+\makeatletter
+\ExplSyntaxOn
+
+% --- Compteurs et variables -------------------------------------------
+\newcounter{question}
+\newcounter{exampart}
+\renewcommand{\theexampart}{\Alph{exampart}}
+
+\fp_new:N   \g__exam_total_fp           % total de l'examen (cette compilation)
+\fp_new:N   \g__exam_part_fp            % total de la partie en cours
+\bool_new:N \g__exam_part_open_bool
+\tl_new:N   \g__exam_part_title_tl
+\int_new:N  \g__exam_part_first_int     % première question de la partie
+\bool_new:N \g__exam_grid_open_bool     % grille QCM ouverte (cahier)
+\int_new:N  \g__exam_nchoices_int       % nombre de choix du QCM courant
+\box_new:N  \l__exam_discard_box        % boîte jetée (contenu masqué)
+\box_new:N  \l__exam_mcq_box            % QCM gardé sur une seule page
+\box_new:N  \g__exam_solution_box       % solution de la question courante
+\seq_new:N  \g__exam_correct_seq        % numéros des bons choix du QCM
+\bool_new:N \l__exam_in_question_bool
+\bool_new:N \l__exam_show_solution_bool
+\bool_new:N \l__exam_breakable_bool
+\fp_new:N   \l__exam_points_fp
+\int_new:N  \l__exam_lines_int
+\dim_new:N  \l__exam_boxheight_dim
+\int_new:N  \l__exam_columns_int
+\bool_new:N \l__exam_multicol_bool
+\tl_new:N   \l__exam_rows_tl
+\skip_const:Nn \c__exam_question_skip { 2em }  % espace avant une question
+
+\keys_define:nn { exam / question }
+  {
+    points .fp_set:N  = \l__exam_points_fp,
+    points .initial:n = 1,
+    lines     .int_set:N  = \l__exam_lines_int,
+    lines     .initial:n  = 5,
+    box       .dim_set:N  = \l__exam_boxheight_dim,
+    box       .initial:n  = 0pt,
+    breakable .bool_set:N = \l__exam_breakable_bool,
+    breakable .default:n  = true,
+    breakable .initial:n  = false,
+  }
+
+\keys_define:nn { exam / choices }
+  {
+    columns .int_set:N = \l__exam_columns_int,
+    columns .initial:n = 1,
+  }
+
+% --- Valeurs lues dans le .aux (compilation précédente) ---------------
+\seq_new:N  \g_exam_aux_rows_seq          % {lettre}{titre}{de}{à}{points}
+\prop_new:N \g_exam_aux_part_points_prop  % lettre -> points
+\tl_new:N   \g_exam_aux_total_tl
+
+\NewDocumentCommand \ExamPartAux { m m m m m }
+  {
+    \seq_gput_right:Nn \g_exam_aux_rows_seq { {#1} {#2} {#3} {#4} {#5} }
+    \prop_gput:Nnn \g_exam_aux_part_points_prop {#1} {#5}
+  }
+\NewDocumentCommand \ExamTotalAux { m }
+  { \tl_gset:Nn \g_exam_aux_total_tl {#1} }
+
+% Le .aux est relu à la fin du document : on ignore cette relecture.
+\AddToHook { enddocument / afterlastpage }
+  {
+    \RenewDocumentCommand \ExamPartAux { m m m m m } { }
+    \RenewDocumentCommand \ExamTotalAux { m } { }
+  }
+
+% --- Affichage des nombres et des points ------------------------------
+% 0.5 -> 0,5 ; « 1 point », « 1,5 point », « 2 points »
+\cs_new_protected:Npn \exam_print_num:n #1
+  {
+    \tl_set:Ne \l_tmpa_tl { \fp_to_decimal:n {#1} }
+    \tl_replace_all:Nnn \l_tmpa_tl { . } { , }
+    \tl_use:N \l_tmpa_tl
+  }
+\cs_new_protected:Npn \exam_print_points:n #1
+  {
+    \exam_print_num:n {#1} \nobreakspace
+    \fp_compare:nNnTF {#1} < { 2 } { point } { points }
+  }
+
+\cs_new_protected:Npn \__exam_add_points:
+  {
+    \fp_gadd:Nn \g__exam_total_fp { \l__exam_points_fp }
+    \fp_gadd:Nn \g__exam_part_fp  { \l__exam_points_fp }
+  }
+
+% --- Parties ----------------------------------------------------------
+\cs_new_protected:Npn \__exam_close_part:
+  {
+    \bool_if:NT \g__exam_part_open_bool
+      {
+        \iow_now:Ne \@auxout
+          {
+            \token_to_str:N \ExamPartAux
+              { \int_to_Alph:n { \value{exampart} } }
+              { \exp_not:V \g__exam_part_title_tl }
+              { \int_use:N \g__exam_part_first_int }
+              { \int_use:N \c@question }
+              { \fp_to_decimal:N \g__exam_part_fp }
+          }
+        \bool_gset_false:N \g__exam_part_open_bool
+      }
+  }
+
+\cs_new_protected:Npn \__exam_part_points:
+  {
+    \prop_get:NeNTF \g_exam_aux_part_points_prop
+      { \int_to_Alph:n { \value{exampart} } } \l_tmpb_tl
+      { \exam_print_points:n { \l_tmpb_tl } }
+      { ??~points }
+  }
+\cs_generate_variant:Nn \prop_get:NnNTF { Ne }
+
+\NewDocumentCommand \exampart { m }
+  {
+    \__exam_close_grid:
+    \__exam_close_part:
+    \stepcounter{exampart}
+    \tl_gset:Nn \g__exam_part_title_tl {#1}
+    \fp_gzero:N \g__exam_part_fp
+    \int_gset:Nn \g__exam_part_first_int { \value{question} + 1 }
+    \bool_gset_true:N \g__exam_part_open_bool
+    \clearpage   % chaque partie commence sur une nouvelle page
+    \noindent
+    { \Large \bfseries Partie \nobreakspace \theexampart \nobreakspace — \nobreakspace #1 }
+    \hfill { \normalsize \__exam_part_points: }
+    \par \nointerlineskip \vspace { 0.3em }
+    \noindent \rule { \linewidth } { 1pt }
+    \par
+  }
+
+% Consignes d'une partie : imprimées seulement dans le questionnaire
+\NewDocumentEnvironment { instructions } { }
+  { \par \exam_if_answer_layout:T { \vbox_set:Nw \l__exam_discard_box } }
+  { \par \exam_if_answer_layout:T { \vbox_set_end: } }
+
+% --- En-tête d'une question -------------------------------------------
+\cs_new_protected:Npn \__exam_question_header:
+  {
+    \par \addvspace { \c__exam_question_skip }
+    \Needspace { 5 \baselineskip }
+    \__exam_question_title:
+  }
+\cs_new_protected:Npn \__exam_question_title:
+  {
+    \noindent \textbf { Question~\thequestion }
+    \hfill { \small \itshape ( \exam_print_points:n { \l__exam_points_fp } ) }
+    \par \nopagebreak
+  }
+
+% --- Lignes de réponse (cahier et corrigé) ----------------------------
+% Dans le corrigé, les lignes sont invisibles (même espace réservé) et la
+% solution est posée en haut de cet espace, sans occuper de place :
+% la mise en page reste identique à celle du cahier.
+\cs_new_protected:Npn \__exam_rule_line:
+  {
+    \exam_if_mode:nTF { answerkey }
+      { \rule { 0pt } { 0.4pt } }
+      { \textcolor { black!45 } { \rule { \linewidth } { 0.4pt } } }
+  }
+
+\cs_new_protected:Npn \__exam_solution_overlay:
+  {
+    \box_if_empty:NF \g__exam_solution_box
+      {
+        % haut de la solution à 0,6 cm au-dessus de la première ligne
+        \dim_set:Nn \l_tmpa_dim { 0.6cm - \box_ht:N \g__exam_solution_box }
+        \hbox_set:Nn \l_tmpa_box
+          { \box_move_up:nn { \l_tmpa_dim } { \box_use_drop:N \g__exam_solution_box } }
+        \box_set_ht:Nn \l_tmpa_box { 0pt }
+        \box_set_dp:Nn \l_tmpa_box { 0pt }
+        \hbox_overlap_right:n
+          {
+            \skip_horizontal:n { 0.5cm }
+            \box_use_drop:N \l_tmpa_box
+          }
+      }
+  }
+
+\cs_new_protected:Npn \__exam_lines:n #1
+  {
+    \par
+    \int_compare:nNnT {#1} > { 0 }
+      {
+        \group_begin:
+          \skip_set:Nn \parskip { 0pt }
+          \skip_set:Nn \baselineskip { 0.85cm }
+          \noindent \__exam_solution_overlay: \__exam_rule_line: \par
+          \prg_replicate:nn { #1 - 1 }
+            { \noindent \__exam_rule_line: \par }
+        \group_end:
+      }
+  }
+
+% --- Cadre de réponse (cahier : vide ; corrigé : contient la solution) -
+% Hauteur fixe : la mise en page est identique dans les deux documents.
+\tcbset{
+  exam/answerbox/.style = {
+    sharp~corners, colback = white, colframe = black!60,
+    boxrule = 0.6pt, before~skip = 0.5em, after~skip = 0.5em,
+    left = 3mm, right = 3mm, top = 2mm, bottom = 2mm,
+  }
+}
+\cs_new_protected:Npn \__exam_answer_box:n #1
+  {
+    \par
+    \begin{tcolorbox} [ exam/answerbox, height = #1 ]
+      \box_use_drop:N \g__exam_solution_box
+    \end{tcolorbox}
+  }
+
+% --- Question courte --------------------------------------------------
+%  lines=n  : n lignes de réponse dans le cahier (5 par défaut)
+%  box=6cm  : cadre vide de cette hauteur, à la place des lignes
+\NewDocumentEnvironment { question } { O{} }
+  {
+    \keys_set:nn { exam / question } {#1}
+    \__exam_close_grid:
+    \refstepcounter { question }
+    \__exam_add_points:
+    \__exam_question_header:
+    \box_gclear:N \g__exam_solution_box
+    \bool_set_true:N \l__exam_in_question_bool
+    \exam_if_answer_layout:T { \vbox_set:Nw \l__exam_discard_box }
+  }
+  {
+    \exam_if_answer_layout:T
+      {
+        \vbox_set_end:
+        \dim_compare:nNnTF { \l__exam_boxheight_dim } > { 0pt }
+          { \__exam_answer_box:n { \l__exam_boxheight_dim } }
+          { \__exam_lines:n { \l__exam_lines_int } }
+      }
+    \par
+  }
+
+% --- Solution ---------------------------------------------------------
+% Corrigé : mise de côté, puis placée dans l'espace de réponse de la
+% question (voir \__exam_lines:n et \__exam_answer_box:n).
+% Ailleurs, et dans un QCM, la solution n'est pas imprimée.
+\NewDocumentEnvironment { solution } { }
+  {
+    \bool_set:Nn \l__exam_show_solution_bool
+      { \exam_if_mode_p:n { answerkey } && \l__exam_in_question_bool }
+    \bool_if:NTF \l__exam_show_solution_bool
+      {
+        \vbox_gset:Nw \g__exam_solution_box
+        \dim_set:Nn \hsize { \linewidth - 1cm }
+        \dim_set:Nn \linewidth { \hsize }
+      }
+      { \vbox_set:Nw \l__exam_discard_box }
+  }
+  {
+    \bool_if:NTF \l__exam_show_solution_bool
+      { \vbox_gset_end: }
+      { \vbox_set_end: }
+  }
+
+% --- QCM --------------------------------------------------------------
+\NewDocumentEnvironment { mcq } { O{} }
+  {
+    \keys_set:nn { exam / question } {#1}
+    \refstepcounter { question }
+    \__exam_add_points:
+    \int_gzero:N \g__exam_nchoices_int
+    \seq_gclear:N \g__exam_correct_seq
+    \exam_if_answer_layout:TF
+      { \vbox_set:Nw \l__exam_discard_box }
+      {
+        \bool_if:NTF \l__exam_breakable_bool
+          { \__exam_question_header: }
+          {
+            % Par défaut, un QCM n'est pas coupé entre deux pages
+            \par \addvspace { \c__exam_question_skip }
+            \vbox_set:Nw \l__exam_mcq_box
+            \__exam_question_title:
+          }
+      }
+  }
+  {
+    \exam_if_answer_layout:TF
+      {
+        \vbox_set_end:
+        \__exam_grid_row:
+      }
+      {
+        \par
+        \bool_if:NF \l__exam_breakable_bool
+          {
+            \vbox_set_end:
+            \box_use_drop:N \l__exam_mcq_box
+            \par
+          }
+      }
+  }
+
+\NewDocumentEnvironment { choices } { O{} }
+  {
+    \keys_set:nn { exam / choices } {#1}
+    \int_gzero:N \g__exam_nchoices_int
+    \setlength { \lineskip } { 0.6em }   % écart minimal entre choix très hauts
+    \bool_set:Nn \l__exam_multicol_bool
+      {
+        \int_compare_p:nNn { \l__exam_columns_int } > { 1 }
+        && ! \exam_if_answer_layout_p:
+      }
+    \bool_if:NT \l__exam_multicol_bool
+      {
+        % Première ligne de chaque colonne sur la même ligne de base, même
+        % si un choix est plus haut (ex. une fraction) ; \multicolsep garde
+        % un espace au-dessus d'un choix très haut (ex. une somme)
+        \setlength { \multicolsep } { 0.9em }
+        \setlength { \topskip } { 1.8em }
+        \begin{multicols} { \l__exam_columns_int }
+      }
+    \begin{itemize} [ leftmargin = 2.6em, labelsep = 0.6em,
+                      itemsep = 0.3em, topsep = 0.4em ]
+  }
+  {
+    \end{itemize}
+    \bool_if:NT \l__exam_multicol_bool { \end{multicols} }
+  }
+
+% Choix « A) », « B) »… ; \correct retient le numéro pour le corrigé.
+\cs_new_protected:Npn \__exam_choice:
+  {
+    \int_gincr:N \g__exam_nchoices_int
+    \use:e
+      {
+        \exp_not:N \item
+          [ \exp_not:N \textbf { \int_to_Alph:n { \g__exam_nchoices_int } ) } ]
+      }
+  }
+\NewDocumentCommand \wrong   { } { \__exam_choice: }
+\NewDocumentCommand \correct { }
+  {
+    \__exam_choice:
+    \seq_gput_right:Ne \g__exam_correct_seq
+      { \int_use:N \g__exam_nchoices_int }
+  }
+
+% --- Grille QCM (cahier et corrigé) -----------------------------------
+% Chaque QCM ajoute une ligne ; l'en-tête est ajouté au début d'une série.
+% Case vide, ou noircie (même taille) pour une bonne réponse du corrigé.
+\cs_new_protected:Npn \__exam_checkbox:n #1
+  {
+    \group_begin:
+      \dim_set:Nn \fboxsep { 0pt }
+      \dim_set:Nn \fboxrule { 0.6pt }
+      \bool_set_false:N \l_tmpa_bool
+      \exam_if_mode:nT { answerkey }
+        {
+          \seq_if_in:NnT \g__exam_correct_seq {#1}
+            { \bool_set_true:N \l_tmpa_bool }
+        }
+      \raisebox { -0.15em }
+        {
+          \fbox
+            {
+              \bool_if:NTF \l_tmpa_bool
+                { \rule { 0.95em } { 0.95em } }
+                { \rule { 0pt } { 0.95em } \hspace* { 0.95em } }
+            }
+        }
+    \group_end:
+  }
+
+\cs_new_protected:Npn \__exam_grid_line:nn #1#2
+  {
+    \penalty 0
+    \nointerlineskip
+    \hbox_to_wd:nn { \linewidth }
+      {
+        \hfil
+        \begin{tabular} { | wc{6em} | wl{24em} | }
+          #1 \rule [ -0.65em ] { 0pt } { 1.9em } & #2 \\ \hline
+        \end{tabular}
+        \hfil
+      }
+  }
+
+\cs_new_protected:Npn \__exam_grid_row:
+  {
+    \par
+    \bool_if:NF \g__exam_grid_open_bool
+      {
+        \bool_gset_true:N \g__exam_grid_open_bool
+        \addvspace { 0.8em }
+        \__exam_grid_line:nn
+          { \hline \textbf { Question } }
+          { \textbf { Réponse } ~ { \small ( cochez~une~seule~case ) } }
+      }
+    \__exam_grid_line:nn
+      { \thequestion }
+      {
+        \int_step_inline:nn { \g__exam_nchoices_int }
+          { \int_to_Alph:n {##1} \enspace \__exam_checkbox:n {##1} \hspace { 1.8em } }
+      }
+  }
+
+\cs_new_protected:Npn \__exam_close_grid:
+  {
+    \bool_if:NT \g__exam_grid_open_bool
+      {
+        \bool_gset_false:N \g__exam_grid_open_bool
+        \par \addvspace { 1em }
+      }
+  }
+
+% --- Tableau des points (page de couverture) --------------------------
+\cs_new_protected:Npn \__exam_table_row:nnnnn #1#2#3#4#5
+  {
+    Partie~#1~—~#2 &
+    \int_compare:nNnTF {#3} > {#4} { — }
+      { \int_compare:nNnTF {#3} = {#4} {#3} { #3~à~#4 } } &
+    \exam_print_num:n {#5}
+    \exam_if_mode:nT { answersheet } { & \hfill / \exam_print_num:n {#5} }
+    \\
+  }
+
+\NewDocumentCommand \PointsTable { }
+  {
+    \tl_if_empty:NTF \g_exam_aux_total_tl
+      { \textit { (Compilez~une~seconde~fois~pour~obtenir~le~barème.) } }
+      {
+        \tl_clear:N \l__exam_rows_tl
+        \seq_map_inline:Nn \g_exam_aux_rows_seq
+          { \tl_put_right:Nn \l__exam_rows_tl { \__exam_table_row:nnnnn ##1 } }
+        \group_begin:
+        \renewcommand { \arraystretch } { 1.3 }
+        \use:e
+          {
+            \exp_not:N \begin{tabularx} { \exp_not:N \linewidth }
+              { @{} >{ \exp_not:N \raggedright \exp_not:N \arraybackslash } X
+                wc{6em} wc{5em}
+                \exam_if_mode:nT { answersheet } { wc{6em} } @{} }
+          }
+          \textbf { Partie } & \textbf { Questions } & \textbf { Points }
+            \exam_if_mode:nT { answersheet } { & \textbf { Résultat } } \\ \midrule
+          \l__exam_rows_tl
+          \midrule
+          \multicolumn { 2 } { @{} r } { \textbf { Total } } &
+          \textbf { \exam_print_num:n { \g_exam_aux_total_tl } }
+            \exam_if_mode:nT { answersheet }
+              { & \hfill \textbf { / \exam_print_num:n { \g_exam_aux_total_tl } } }
+          \\
+        \end{tabularx}
+        \group_end:
+      }
+  }
+
+% --- Fin du document --------------------------------------------------
+\AddToHook { enddocument }
+  {
+    \__exam_close_grid:
+    \__exam_close_part:
+    \iow_now:Ne \@auxout
+      { \token_to_str:N \ExamTotalAux { \fp_to_decimal:N \g__exam_total_fp } }
+  }
+
+\ExplSyntaxOff
+\makeatother
