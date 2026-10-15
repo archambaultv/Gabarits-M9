@@ -1,7 +1,8 @@
 % =====================================================================
 %  code.tex — Coloration syntaxique (listings), pensée pour le noir et blanc
 %
-%  Styles disponibles : python, javascript, nodejs, html, css, java
+%  Styles disponibles : python, javascript, nodejs, html, css, java,
+%                       dockerfile, yaml
 %
 %  Utilisation dans une question :
 %
@@ -101,6 +102,28 @@
   sensitive    = false,
 }
 
+% Instructions en majuscules (convention) : « from » dans un RUN reste normal
+\lstdefinelanguage{Dockerfile}{
+  morekeywords = {FROM, AS, RUN, CMD, ENTRYPOINT, COPY, ADD, WORKDIR, ENV,
+    ARG, EXPOSE, VOLUME, USER, LABEL, HEALTHCHECK, SHELL, STOPSIGNAL,
+    ONBUILD},
+  sensitive    = true,
+  morecomment  = [l]{\#},
+  morestring   = [b]",
+  morestring   = [b]',
+}
+
+% Clés en gras : tout est gras jusqu'au premier « : » de la ligne,
+% puis le reste de la ligne (la valeur) revient au style normal
+\lstdefinelanguage{YAML}{
+  morekeywords = {true, false, null, yes, no, on, off},
+  sensitive    = false,
+  morecomment  = [l]{\#},
+  morestring   = [b]",
+  morestring   = [b]',
+  moredelim    = **[l][\mdseries]{:},
+}
+
 % --- Styles par langage ----------------------------------------------
 \lstdefinestyle{python}{
   style        = base,
@@ -140,6 +163,19 @@
   style        = base,
   language     = Java,
   morekeywords = {var, record, sealed, permits, yield},
+}
+
+\lstdefinestyle{dockerfile}{
+  style    = base,
+  language = Dockerfile,
+}
+
+\lstdefinestyle{yaml}{
+  style        = base,
+  language     = YAML,
+  basicstyle   = \ttfamily\small\bfseries,
+  keywordstyle = \mdseries\itshape,
+  commentstyle = \mdseries\itshape\color{codecomment},
 }
 
 \lstset{style=base}
