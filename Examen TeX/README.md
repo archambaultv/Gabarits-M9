@@ -39,10 +39,15 @@ latexmk -c                           # efface les fichiers temporaires
 - `\OnlyQuestionnaire{...}`, `\OnlyAnswerSheet{...}` et
   `\OnlyAnswerKey{...}` n'impriment leur contenu que dans le questionnaire,
   le cahier ou le corrigé.
-- Pour éviter qu'une question soit coupée entre deux pages du
-  questionnaire, ajoutez `\OnlyQuestionnaire{\clearpage}` avant la question.
-  Un simple `\clearpage` changerait aussi la pagination du cahier et du
-  corrigé.
+- Dans le questionnaire, une question longue, mais plus courte qu'une page,
+  n'est jamais coupée entre deux pages. Si elle ne tient pas en bas de page,
+  elle passe à la page suivante. Toutefois, si une question est plus haute
+  qu'une page, elle se coupe normalement. L'option `[breakable]`
+  (`\begin{question}[points=3, breakable]`) permet de couper une question
+  longue plutôt que de laisser un grand blanc.
+- Pour forcer un saut de page dans le questionnaire seulement, ajoutez
+  `\OnlyQuestionnaire{\clearpage}` avant la question. Un simple
+  `\clearpage` changerait aussi la pagination du cahier et du corrigé.
 - Le corrigé reprend exactement la mise en page du cahier. Prévoyez donc
   assez de lignes (`lines=`) ou un cadre assez grand (`box=`) pour que la
   solution y tienne.

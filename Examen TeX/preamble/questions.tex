@@ -19,12 +19,16 @@
 %  \end{mcq}
 %
 %  \begin{question}[points=3, lines=6]    % ou box=6cm : cadre vide
+%                                          % [breakable] : comme pour mcq
 %    Énoncé…     % verbe d'action du niveau de Bloom visé : Expliquez…
 %    \begin{solution}
 %      Réponse attendue : imprimée dans le corrigé, par-dessus les
 %      lignes ou dans le cadre (prévoir assez d'espace)
 %    \end{solution}
 %  \end{question}
+%
+%  Dans le questionnaire, une question n'est pas coupée entre deux pages,
+%  sauf avec [breakable] ou si elle est plus haute qu'une page.
 %
 %  Le corrigé a exactement la mise en page du cahier : mêmes pages,
 %  même grille (bonnes cases noircies), mêmes espaces de réponse.
@@ -48,7 +52,7 @@
 \bool_new:N \g__exam_grid_open_bool     % grille QCM ouverte (cahier)
 \int_new:N  \g__exam_nchoices_int       % nombre de choix du QCM courant
 \box_new:N  \l__exam_discard_box        % boîte jetée (contenu masqué)
-\box_new:N  \l__exam_mcq_box            % QCM gardé sur une seule page
+\box_new:N  \l__exam_keep_box           % question gardée sur une seule page
 \box_new:N  \g__exam_solution_box       % solution de la question courante
 \seq_new:N  \g__exam_correct_seq        % numéros des bons choix du QCM
 \bool_new:N \l__exam_in_question_bool
@@ -201,6 +205,32 @@
     \par \nopagebreak
   }
 
+% --- Question gardée sur une seule page (questionnaire) ---------------
+% Sauf avec [breakable]. Une question plus haute qu'une page est
+% imprimée sans boîte : elle se coupe normalement.
+\cs_new_protected:Npn \__exam_keep_begin:
+  {
+    \bool_if:NTF \l__exam_breakable_bool
+      { \__exam_question_header: }
+      {
+        \par \addvspace { \c__exam_question_skip }
+        \vbox_set:Nw \l__exam_keep_box
+        \__exam_question_title:
+      }
+  }
+\cs_new_protected:Npn \__exam_keep_end:
+  {
+    \par
+    \bool_if:NF \l__exam_breakable_bool
+      {
+        \vbox_set_end:
+        \dim_compare:nNnTF { \box_ht_plus_dp:N \l__exam_keep_box } > { \textheight }
+          { \vbox_unpack_drop:N \l__exam_keep_box }
+          { \box_use_drop:N \l__exam_keep_box }
+        \par
+      }
+  }
+
 % --- Lignes de réponse (cahier et corrigé) ----------------------------
 % Dans le corrigé, les lignes sont invisibles (même espace réservé) et la
 % solution est posée en haut de cet espace, sans occuper de place :
@@ -271,20 +301,25 @@
     \__exam_close_grid:
     \refstepcounter { question }
     \__exam_add_points:
-    \__exam_question_header:
     \box_gclear:N \g__exam_solution_box
     \bool_set_true:N \l__exam_in_question_bool
-    \exam_if_answer_layout:T { \vbox_set:Nw \l__exam_discard_box }
+    \exam_if_answer_layout:TF
+      {
+        \__exam_question_header:
+        \vbox_set:Nw \l__exam_discard_box
+      }
+      { \__exam_keep_begin: }
   }
   {
-    \exam_if_answer_layout:T
+    \exam_if_answer_layout:TF
       {
         \vbox_set_end:
         \dim_compare:nNnTF { \l__exam_boxheight_dim } > { 0pt }
           { \__exam_answer_box:n { \l__exam_boxheight_dim } }
           { \__exam_lines:n { \l__exam_lines_int } }
+        \par
       }
-    \par
+      { \__exam_keep_end: }
   }
 
 % --- Solution ---------------------------------------------------------
@@ -319,16 +354,7 @@
     \seq_gclear:N \g__exam_correct_seq
     \exam_if_answer_layout:TF
       { \vbox_set:Nw \l__exam_discard_box }
-      {
-        \bool_if:NTF \l__exam_breakable_bool
-          { \__exam_question_header: }
-          {
-            % Par défaut, un QCM n'est pas coupé entre deux pages
-            \par \addvspace { \c__exam_question_skip }
-            \vbox_set:Nw \l__exam_mcq_box
-            \__exam_question_title:
-          }
-      }
+      { \__exam_keep_begin: }
   }
   {
     \exam_if_answer_layout:TF
@@ -336,15 +362,7 @@
         \vbox_set_end:
         \__exam_grid_row:
       }
-      {
-        \par
-        \bool_if:NF \l__exam_breakable_bool
-          {
-            \vbox_set_end:
-            \box_use_drop:N \l__exam_mcq_box
-            \par
-          }
-      }
+      { \__exam_keep_end: }
   }
 
 \NewDocumentEnvironment { choices } { O{} }
