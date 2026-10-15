@@ -57,10 +57,12 @@
 \fp_new:N   \l__exam_points_fp
 \int_new:N  \l__exam_lines_int
 \dim_new:N  \l__exam_boxheight_dim
+\dim_new:N  \l__exam_needspace_dim     % espace gardé avec l'en-tête
 \int_new:N  \l__exam_columns_int
 \bool_new:N \l__exam_multicol_bool
 \tl_new:N   \l__exam_rows_tl
 \skip_const:Nn \c__exam_question_skip { 2em }  % espace avant une question
+\dim_const:Nn  \c__exam_line_dim { 0.85cm }   % écart des lignes de réponse
 
 \keys_define:nn { exam / question }
   {
@@ -172,10 +174,24 @@
   { \par \exam_if_answer_layout:T { \vbox_set_end: } }
 
 % --- En-tête d'une question -------------------------------------------
+% Cahier et corrigé : l'en-tête et tout l'espace de réponse (lignes= ou
+% box=) restent sur la même page ; sinon la solution du corrigé, posée
+% sur cet espace, déborderait en bas de page.
 \cs_new_protected:Npn \__exam_question_header:
   {
     \par \addvspace { \c__exam_question_skip }
-    \Needspace { 5 \baselineskip }
+    \exam_if_answer_layout:TF
+      {
+        \dim_set:Nn \l__exam_needspace_dim
+          {
+            \baselineskip +
+            \dim_compare:nNnTF { \l__exam_boxheight_dim } > { 0pt }
+              { \l__exam_boxheight_dim + 1em }   % cadre et before/after skip
+              { \c__exam_line_dim * \l__exam_lines_int }
+          }
+        \Needspace { \l__exam_needspace_dim }
+      }
+      { \Needspace { 5 \baselineskip } }
     \__exam_question_title:
   }
 \cs_new_protected:Npn \__exam_question_title:
@@ -221,7 +237,7 @@
       {
         \group_begin:
           \skip_set:Nn \parskip { 0pt }
-          \skip_set:Nn \baselineskip { 0.85cm }
+          \skip_set:Nn \baselineskip { \c__exam_line_dim }
           \noindent \__exam_solution_overlay: \__exam_rule_line: \par
           \prg_replicate:nn { #1 - 1 }
             { \noindent \__exam_rule_line: \par }
