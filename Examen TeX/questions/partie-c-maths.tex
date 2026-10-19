@@ -47,3 +47,35 @@ x2 = (-b - math.sqrt(b**2 - 4*a*c)) / (2*a)
     \codeinline{y / 2*a} calcule $(y/2) \cdot a$ et non $y/(2a)$.
   \end{solution}
 \end{question}
+
+% --- Question en plusieurs parties : cadre de code, puis lignes ------
+\begin{question}[points=4]
+  On sait que la somme $S_n = \displaystyle\sum_{k=1}^{n} \frac{1}{k^2}$
+  tend vers $\dfrac{\pi^2}{6}$ lorsque $n$ devient grand.
+  \begin{subquestion}[box=4.5cm]
+    Écrivez une fonction Python \codeinline{somme(n)} qui retourne $S_n$.
+    \begin{solution}
+\begin{code}[numbers=none]{python}
+def somme(n):
+    total = 0
+    for k in range(1, n + 1):
+        total += 1 / k**2
+    return total
+\end{code}
+    \end{solution}
+  \end{subquestion}
+  \begin{subquestion}[lines=1]
+    Déterminez la valeur retournée par \codeinline{somme(2)}.
+    \begin{solution}
+      $1 + \frac{1}{4} = 1{,}25$
+    \end{solution}
+  \end{subquestion}
+  \begin{subquestion}[lines=2]
+    Écrivez l'expression Python qui donne une approximation de $\pi$
+    à l'aide de \codeinline{somme(1000)}.
+    \begin{solution}
+      \codeinline{math.sqrt(6 * somme(1000))}, car
+      $\pi \approx \sqrt{6\,S_n}$.
+    \end{solution}
+  \end{subquestion}
+\end{question}

@@ -12,6 +12,21 @@
 %      \end{solution}
 %    \end{question}
 %
+%  Question en plusieurs parties a), b)… : chaque sous-question a son
+%  propre espace dans le cahier, précédé de sa lettre (les options
+%  lines= et box= de la question sont alors ignorées) :
+%    \begin{question}[points=5]
+%      Énoncé commun
+%      \begin{subquestion}[lines=3]
+%        Expliquez…
+%        \begin{solution} ... \end{solution}
+%      \end{subquestion}
+%      \begin{subquestion}[box=5cm]
+%        Écrivez…
+%        \begin{solution} ... \end{solution}
+%      \end{subquestion}
+%    \end{question}
+%
 %  Code tiré d'un fichier :
 %    \codefile{java}{questions/code/Compte.java}
 %    \codefile[firstline=8, lastline=13]{java}{questions/code/Compte.java}
@@ -23,24 +38,41 @@
   Répondez dans l'espace prévu du cahier de réponses.
 \end{instructions}
 
-% --- Java, depuis un fichier, avec numéros de ligne ------------------
-\begin{question}[points=3, lines=6]
+% --- Java, depuis un fichier, en plusieurs parties --------------------
+% Chaque sous-question a son espace dans le cahier : lignes ou cadre.
+\begin{question}[points=5]
   L'exécution de la méthode \codeinline{main} de la classe suivante
   provoque une erreur.
   \codefile{java}{questions/code/Compte.java}
-  \begin{enumerate}[label=\alph*)]
-    \item Expliquez cette erreur dans vos mots.
-    \item Indiquez la ligne où l'erreur est déclenchée.
-  \end{enumerate}
-  \begin{solution}
-    \begin{enumerate}[label=\alph*)]
-      \item Le second retrait (80\,\$) dépasse le solde (70\,\$) :
-            une \codeinline{IllegalArgumentException} « Solde insuffisant »
-            est levée et la ligne 23 n'est jamais exécutée.
-      \item L'exception est levée à la ligne 10, lors de l'appel de la
-            ligne 22.
-    \end{enumerate}
-  \end{solution}
+  \begin{subquestion}[lines=3]
+    Expliquez cette erreur dans vos mots.
+    \begin{solution}
+      Le second retrait (80\,\$) dépasse le solde (70\,\$) :
+      une \codeinline{IllegalArgumentException} « Solde insuffisant »
+      est levée et la ligne 23 n'est jamais exécutée.
+    \end{solution}
+  \end{subquestion}
+  \begin{subquestion}[lines=2]
+    Indiquez la ligne où l'erreur est déclenchée.
+    \begin{solution}
+      L'exception est levée à la ligne 10, lors de l'appel de la ligne 22.
+    \end{solution}
+  \end{subquestion}
+  \begin{subquestion}[box=5cm]
+    Réécrivez les lignes 21 à 23 pour que le programme affiche
+    « Retrait refusé » au lieu de s'arrêter, puis affiche le solde.
+    \begin{solution}
+\begin{code}[numbers=none]{java}
+try {
+    c.retirer(30);
+    c.retirer(80);
+} catch (IllegalArgumentException e) {
+    System.out.println("Retrait refusé");
+}
+System.out.println(c.getSolde());
+\end{code}
+    \end{solution}
+  \end{subquestion}
 \end{question}
 
 % --- HTML + CSS : écrire du code -------------------------------------

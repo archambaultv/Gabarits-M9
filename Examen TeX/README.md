@@ -48,6 +48,12 @@ latexmk -c                           # efface les fichiers temporaires
 - Pour forcer un saut de page dans le questionnaire seulement, ajoutez
   `\OnlyQuestionnaire{\clearpage}` avant la question. Un simple
   `\clearpage` changerait aussi la pagination du cahier et du corrigé.
+- Pour une question en plusieurs parties a), b), c)…, utilisez un
+  environnement `subquestion` par partie, chacun avec son espace
+  (`lines=` ou `box=`) et sa `solution`. Le cahier imprime alors un espace
+  par partie, précédé de sa lettre : on peut mélanger lignes et cadres de
+  code. Les options `lines=` et `box=` de la question sont ignorées. Voir
+  le modèle au début de `partie-b-courtes.tex`.
 - Le corrigé reprend exactement la mise en page du cahier. Prévoyez donc
   assez de lignes (`lines=`) ou un cadre assez grand (`box=`) pour que la
   solution y tienne.

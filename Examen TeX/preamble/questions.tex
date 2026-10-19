@@ -27,6 +27,21 @@
 %    \end{solution}
 %  \end{question}
 %
+%  Question en plusieurs parties : a), b)… ont chacune leur espace de
+%  réponse dans le cahier (lignes ou cadre), précédé de la lettre.
+%  Les options lines= et box= de la question sont alors ignorées.
+%  \begin{question}[points=5]
+%    Énoncé commun…
+%    \begin{subquestion}[lines=3]
+%      Expliquez…
+%      \begin{solution} … \end{solution}
+%    \end{subquestion}
+%    \begin{subquestion}[box=6cm]
+%      Écrivez…
+%      \begin{solution} … \end{solution}
+%    \end{subquestion}
+%  \end{question}
+%
 %  Dans le questionnaire, une question n'est pas coupée entre deux pages,
 %  sauf avec [breakable] ou si elle est plus haute qu'une page.
 %
@@ -65,8 +80,13 @@
 \int_new:N  \l__exam_columns_int
 \bool_new:N \l__exam_multicol_bool
 \tl_new:N   \l__exam_rows_tl
+\seq_new:N  \g__exam_parts_seq          % espaces des sous-questions : {lignes}{cadre}
+\int_new:N  \l__exam_part_int
+\int_new:N  \l__exam_part_lines_int
+\dim_new:N  \l__exam_part_boxheight_dim
 \skip_const:Nn \c__exam_question_skip { 2em }  % espace avant une question
 \dim_const:Nn  \c__exam_line_dim { 0.85cm }   % écart des lignes de réponse
+\skip_const:Nn \c__exam_part_skip { 1.2em }   % espace avant une sous-question (cahier)
 
 \keys_define:nn { exam / question }
   {
@@ -79,6 +99,14 @@
     breakable .bool_set:N = \l__exam_breakable_bool,
     breakable .default:n  = true,
     breakable .initial:n  = false,
+  }
+
+\keys_define:nn { exam / subquestion }
+  {
+    lines .int_set:N  = \l__exam_part_lines_int,
+    lines .initial:n  = 5,
+    box   .dim_set:N  = \l__exam_part_boxheight_dim,
+    box   .initial:n  = 0pt,
   }
 
 \keys_define:nn { exam / choices }
@@ -180,22 +208,13 @@
 % --- En-tête d'une question -------------------------------------------
 % Cahier et corrigé : l'en-tête et tout l'espace de réponse (lignes= ou
 % box=) restent sur la même page ; sinon la solution du corrigé, posée
-% sur cet espace, déborderait en bas de page.
-\cs_new_protected:Npn \__exam_question_header:
+% sur cet espace, déborderait en bas de page. #1 : hauteur de l'espace
+% gardé avec l'en-tête.
+\cs_new_protected:Npn \__exam_question_header:n #1
   {
     \par \addvspace { \c__exam_question_skip }
-    \exam_if_answer_layout:TF
-      {
-        \dim_set:Nn \l__exam_needspace_dim
-          {
-            \baselineskip +
-            \dim_compare:nNnTF { \l__exam_boxheight_dim } > { 0pt }
-              { \l__exam_boxheight_dim + 1em }   % cadre et before/after skip
-              { \c__exam_line_dim * \l__exam_lines_int }
-          }
-        \Needspace { \l__exam_needspace_dim }
-      }
-      { \Needspace { 5 \baselineskip } }
+    \dim_set:Nn \l__exam_needspace_dim { \baselineskip + #1 }
+    \Needspace { \l__exam_needspace_dim }
     \__exam_question_title:
   }
 \cs_new_protected:Npn \__exam_question_title:
@@ -211,7 +230,7 @@
 \cs_new_protected:Npn \__exam_keep_begin:
   {
     \bool_if:NTF \l__exam_breakable_bool
-      { \__exam_question_header: }
+      { \__exam_question_header:n { 4 \baselineskip } }
       {
         \par \addvspace { \c__exam_question_skip }
         \vbox_set:Nw \l__exam_keep_box
@@ -292,9 +311,27 @@
     \end{tcolorbox}
   }
 
+% --- Espace de réponse : lignes (#1) ou cadre de hauteur #2 ----------
+% Hauteur occupée dans la page (le cadre ajoute before/after skip)
+\cs_new:Npn \__exam_space_height:nn #1#2
+  {
+    \dim_compare:nNnTF {#2} > { 0pt }
+      { #2 + 1em }
+      { \c__exam_line_dim * (#1) }
+  }
+\cs_new_protected:Npn \__exam_answer_space:nn #1#2
+  {
+    \dim_compare:nNnTF {#2} > { 0pt }
+      { \__exam_answer_box:n {#2} }
+      { \__exam_lines:n {#1} }
+    \par
+  }
+
 % --- Question courte --------------------------------------------------
 %  lines=n  : n lignes de réponse dans le cahier (5 par défaut)
 %  box=6cm  : cadre vide de cette hauteur, à la place des lignes
+% Cahier et corrigé : l'énoncé est jeté ; l'en-tête et l'espace de
+% réponse (ou ceux des sous-questions) sont imprimés à la fin.
 \NewDocumentEnvironment { question } { O{} }
   {
     \keys_set:nn { exam / question } {#1}
@@ -302,24 +339,80 @@
     \refstepcounter { question }
     \__exam_add_points:
     \box_gclear:N \g__exam_solution_box
+    \seq_gclear:N \g__exam_parts_seq
     \bool_set_true:N \l__exam_in_question_bool
     \exam_if_answer_layout:TF
-      {
-        \__exam_question_header:
-        \vbox_set:Nw \l__exam_discard_box
-      }
+      { \vbox_set:Nw \l__exam_discard_box }
       { \__exam_keep_begin: }
   }
   {
     \exam_if_answer_layout:TF
       {
         \vbox_set_end:
-        \dim_compare:nNnTF { \l__exam_boxheight_dim } > { 0pt }
-          { \__exam_answer_box:n { \l__exam_boxheight_dim } }
-          { \__exam_lines:n { \l__exam_lines_int } }
-        \par
+        \seq_if_empty:NTF \g__exam_parts_seq
+          {
+            \__exam_question_header:n
+              { \__exam_space_height:nn { \l__exam_lines_int } { \l__exam_boxheight_dim } }
+            \__exam_answer_space:nn { \l__exam_lines_int } { \l__exam_boxheight_dim }
+          }
+          {
+            \int_zero:N \l__exam_part_int
+            \seq_map_function:NN \g__exam_parts_seq \__exam_part_answer:n
+          }
       }
       { \__exam_keep_end: }
+  }
+
+% --- Sous-questions a), b)… -------------------------------------------
+%  lines=n ou box=6cm : comme pour une question.
+% Questionnaire : un item « a) » d'une liste. Cahier et corrigé : rien
+% n'est imprimé ici ; l'espace de réponse et la solution sont mis de
+% côté, puis imprimés à la fin de la question, chacun précédé de sa
+% lettre (voir \__exam_part_answer:n).
+\NewDocumentEnvironment { subquestion } { O{} }
+  {
+    \bool_if:NF \l__exam_in_question_bool
+      { \msg_error:nn { exam } { subquestion-outside } }
+    \keys_set:nn { exam / subquestion } {#1}
+    \box_gclear:N \g__exam_solution_box
+    \exam_if_answer_layout:F
+      {
+        \int_set:Nn \l_tmpa_int { \seq_count:N \g__exam_parts_seq + 1 }
+        \begin{enumerate} [ label = \alph*), start = \l_tmpa_int ]
+        \item
+      }
+  }
+  {
+    \exam_if_answer_layout:F { \end{enumerate} }
+    \seq_gput_right:Ne \g__exam_parts_seq
+      { { \int_use:N \l__exam_part_lines_int } { \dim_use:N \l__exam_part_boxheight_dim } }
+    \tl_set:Ne \l_tmpa_tl { g__exam_part_ \seq_count:N \g__exam_parts_seq _box }
+    \box_if_exist:cF { \l_tmpa_tl } { \box_new:c { \l_tmpa_tl } }
+    \box_gset_eq:cN { \l_tmpa_tl } \g__exam_solution_box
+    \box_gclear:N \g__exam_solution_box
+  }
+\msg_new:nnn { exam } { subquestion-outside }
+  { L'environnement~subquestion~doit~être~dans~une~question. }
+
+% Espace de réponse d'une sous-question #1 = {lignes}{cadre}. La lettre
+% reste sur la même page que l'espace ; la première sous-question reste
+% aussi avec l'en-tête de la question.
+\cs_new_protected:Npn \__exam_part_answer:n #1 { \__exam_part_answer:nn #1 }
+\cs_new_protected:Npn \__exam_part_answer:nn #1#2
+  {
+    \int_incr:N \l__exam_part_int
+    \dim_set:Nn \l_tmpa_dim { \baselineskip + \__exam_space_height:nn {#1} {#2} }
+    \int_compare:nNnTF { \l__exam_part_int } = { 1 }
+      { \__exam_question_header:n { \l_tmpa_dim } }
+      {
+        \par \addvspace { \c__exam_part_skip }
+        \Needspace { \l_tmpa_dim }
+      }
+    \noindent \textbf { \int_to_alph:n { \l__exam_part_int } ) }
+    \par \nopagebreak
+    \box_gset_eq:Nc \g__exam_solution_box
+      { g__exam_part_ \int_use:N \l__exam_part_int _box }
+    \__exam_answer_space:nn {#1} {#2}
   }
 
 % --- Solution ---------------------------------------------------------
