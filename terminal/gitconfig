@@ -1,0 +1,5 @@
+# À inclure depuis ~/.gitconfig (voir README.md)
+
+[alias]
+	# Graphe des commits avec la date et l'auteur
+	graph = log --graph --date=format:'%Y-%m-%d %H:%M' --format='%C(yellow)%h%C(reset) %C(green)%ad%C(reset) %C(cyan)%<(15,trunc)%an%C(reset)%C(auto)%d%C(reset) %s'

@@ -1,0 +1,450 @@
+#!/usr/bin/env python3
+"""Répartition du travail entre les membres d'une équipe, d'après l'historique Git.
+
+Quatre métriques, chacune exprimée en pourcentage de la part équitable (100 % = sa part) :
+  - commits     : commits sans les merges
+  - lignes      : lignes ajoutées + retirées, sans les fichiers générés
+  - jours       : nombre de jours distincts avec au moins un commit
+  - survivantes : lignes encore présentes dans la branche finale (git blame)
+
+Les faux merges (un seul parent, message « Merge branch … ») sont exclus comme les
+vrais : leur diff contient le travail des autres.
+
+La moyenne est géométrique : 200 % et 50 % donnent 100 %, pas 125 %.
+
+Un commit compte pour son auteur et pour chaque co-auteur (trailer Co-authored-by).
+Les bots et les assistants IA (Claude, Copilot, Cursor…) ne sont pas des élèves.
+
+Avec --mailmap, le fichier est la liste de l'équipe : un élève sans commit y apparaît,
+et les identités qu'il ne connaît pas sont signalées au lieu d'être comptées.
+
+Un élève est signalé (▲ ou ▼) quand la majorité de ses pourcentages dépassent les seuils.
+"""
+
+import argparse
+import collections
+import fnmatch
+import math
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+DEFAULT_BRANCHES = ("main", "dev")
+
+# Dossiers dont le contenu est généré, téléchargé ou compilé
+EXCLUDED_DIRS = {
+    "node_modules", "vendor", "dist", "build", "target", "out", "bin", "obj",
+    "__pycache__", ".venv", "venv", ".next", ".nuxt", "coverage", ".gradle",
+    ".idea", ".vs",
+}
+
+# Fichiers générés ou de données (comparés au nom du fichier)
+EXCLUDED_FILES = (
+    "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "composer.lock",
+    "poetry.lock", "Pipfile.lock", "Cargo.lock", "Gemfile.lock", "go.sum",
+    "*.lock", "*.min.js", "*.min.css", "*.map", "*.ipynb", "*.log",
+    "*.csv", "*.tsv", "*.svg",
+)
+
+# Message d'un merge : un commit à un seul parent avec ce message est un faux merge
+MERGE_MESSAGE = re.compile(r"Merge (branch|remote-tracking branch|pull request|commit) ")
+
+# Assistants IA, comme auteur ou co-auteur (comparé à « nom <courriel> »)
+AI_AUTHOR = re.compile(
+    r"@(anthropic\.com|openai\.com|cursor\.(com|sh)|codeium\.com|windsurf\.com)\b|copilot",
+    re.IGNORECASE,
+)
+
+EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+SEP = "\x1f"  # Séparateur de champs dans le format de git log
+TRAILER_SEP = "\x1e"  # Séparateur des co-auteurs dans un même champ
+
+
+def git(repo, *args, config=(), input=None):
+    cmd = ["git", "-C", str(repo), "-c", "core.quotePath=false"]
+    for c in config:
+        cmd += ["-c", c]
+    result = subprocess.run(cmd + list(args), check=False, capture_output=True, text=True, input=input)
+    if result.returncode != 0:
+        sys.exit(f"Erreur git : {result.stderr.strip()}")
+    return result.stdout
+
+
+def ref_exists(repo, ref):
+    result = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+        check=False, capture_output=True,
+    )
+    return result.returncode == 0
+
+
+def resolve_refs(repo, branches):
+    """Pour chaque branche, garde la version de origin et la locale si elles existent."""
+    refs = []
+    for name in branches:
+        for ref in (f"origin/{name}", name):
+            if ref not in refs and ref_exists(repo, ref):
+                refs.append(ref)
+    return refs
+
+
+def renamed_path(path):
+    """Avec -M, numstat affiche « a/{old => new}/f » ou « old => new » : garde le nouveau chemin."""
+    if " => " not in path:
+        return path
+    m = re.match(r"(.*)\{(.*) => (.*)\}(.*)", path)
+    if m:
+        before, _, new, after = m.groups()
+        return (before + new + after).replace("//", "/")
+    return path.split(" => ", 1)[1]
+
+
+def is_excluded(path, extra_patterns, use_defaults):
+    parts = path.split("/")
+    name = parts[-1]
+    if use_defaults:
+        if any(p in EXCLUDED_DIRS for p in parts[:-1]):
+            return True
+        if any(fnmatch.fnmatch(name, pat) for pat in EXCLUDED_FILES):
+            return True
+    return any(fnmatch.fnmatch(path, pat) or fnmatch.fnmatch(name, pat) for pat in extra_patterns)
+
+
+def parse_contact(contact):
+    """« Nom <courriel> » → (nom, courriel), ou None si le format est invalide."""
+    m = re.fullmatch(r"\s*(.*?)\s*<([^<>]+)>\s*", contact)
+    return (m.group(1), m.group(2)) if m else None
+
+
+def map_contacts(repo, contacts, config):
+    """Applique le .mailmap aux co-auteurs, que git log ne traduit pas dans les trailers.
+
+    Retourne {contact: (nom, courriel, nom brut, courriel brut)}, sans les contacts invalides.
+    """
+    parsed = {c: p for c in contacts if (p := parse_contact(c))}
+    if not parsed:
+        return {}
+    out = git(repo, "check-mailmap", "--stdin", config=config, input="\n".join(parsed) + "\n")
+    return {c: (*(parse_contact(m) or raw), *raw)
+            for (c, raw), m in zip(parsed.items(), out.splitlines())}
+
+
+def read_roster(path):
+    """Les élèves nommés dans un .mailmap : {courriel canonique: nom}, dans l'ordre du fichier."""
+    roster = {}
+    for line in Path(path).expanduser().read_text().splitlines():
+        contacts = re.findall(r"([^<>]*)<([^<>]*)>", line.split("#", 1)[0])
+        if not contacts:
+            continue
+        name, email = (part.strip() for part in contacts[0])
+        key = email.lower()
+        if name or key not in roster:
+            roster[key] = name or email
+    return roster
+
+
+def read_commits(repo, refs, args, config):
+    """Retourne les commits {hash: (participants, date, lignes)} et le nombre de faux merges.
+
+    Chaque participant (auteur, puis co-auteurs) est (nom, courriel, nom brut, courriel brut).
+    """
+    fmt = "%x00" + SEP.join(["%H", "%s", "%aN", "%aE", "%an", "%ae", "%ad",
+                             "%(trailers:key=Co-authored-by,valueonly,separator=%x1e)"])
+    log_args = ["log", *refs, "--no-merges", "-M", "--numstat", "--date=short", f"--format={fmt}"]
+    if args.since:
+        log_args.append(f"--since={args.since}")
+    if args.until:
+        log_args.append(f"--until={args.until}")
+    out = git(repo, *log_args, config=config)
+
+    commits = {}
+    fake_merges = 0
+    for record in out.split("\x00")[1:]:
+        header, *stats = record.strip("\n").split("\n")
+        sha, subject, name, email, raw_name, raw_email, date, trailers = header.split(SEP)
+        if MERGE_MESSAGE.match(subject):
+            fake_merges += 1
+            continue
+        participants = [(name, email, raw_name, raw_email)]
+        if not args.no_coauthors:
+            participants += [c.strip() for c in trailers.split(TRAILER_SEP) if c.strip()]
+        lines = 0
+        for stat in stats:
+            if not stat:
+                continue
+            added, deleted, path = stat.split("\t", 2)
+            if added == "-":  # Fichier binaire
+                continue
+            if is_excluded(renamed_path(path), args.exclude_file, not args.no_default_excludes):
+                continue
+            lines += int(added) + int(deleted)
+        if args.max_lines:
+            lines = min(lines, args.max_lines)
+        commits[sha] = (participants, date, lines)
+
+    # Les co-auteurs sont encore des chaînes « Nom <courriel> » : on les traduit tous d'un coup
+    contacts = sorted({p for participants, _, _ in commits.values() for p in participants[1:]})
+    mapped = map_contacts(repo, contacts, config)
+    commits = {sha: ([author, *(mapped[c] for c in coauthors if c in mapped)], date, lines)
+               for sha, ((author, *coauthors), date, lines) in commits.items()}
+    return commits, fake_merges
+
+
+def read_surviving(repo, rev, args):
+    """Compte, pour chaque commit, ses lignes encore présentes dans rev (git blame).
+
+    Avec --since, les lignes plus anciennes sont attribuées à un commit hors période, donc ignorées.
+    """
+    counts = collections.Counter()
+    # Le diff depuis l'arbre vide liste les fichiers, avec « - » pour les binaires
+    for stat in git(repo, "diff", "--numstat", "-z", EMPTY_TREE, rev).split("\x00"):
+        if not stat:
+            continue
+        added, _, path = stat.split("\t", 2)
+        if added == "-" or is_excluded(path, args.exclude_file, not args.no_default_excludes):
+            continue
+        blame_args = ["blame", "-w", "-M", "-C", "--porcelain"]
+        if args.since:
+            blame_args.append(f"--since={args.since}")
+        sha = None
+        for line in git(repo, *blame_args, rev, "--", path).splitlines():
+            if line.startswith("\t"):
+                counts[sha] += 1
+            elif re.match(r"[0-9a-f]{40,64} \d+ \d+", line):
+                sha = line.split(" ", 1)[0]
+    return counts
+
+
+def is_ai(name, email):
+    return bool(AI_AUTHOR.search(f"{name} <{email}>"))
+
+
+def is_ignored_author(name, email, patterns):
+    if "[bot]" in name or "[bot]" in email or is_ai(name, email):
+        return True
+    return any(re.search(p, f"{name} <{email}>", re.IGNORECASE) for p in patterns)
+
+
+def group_by_student(commits, surviving, exclude_patterns, roster=None):
+    """Regroupe par courriel (après .mailmap). Le nom affiché est le plus fréquent.
+
+    Avec une liste d'équipe (roster), seuls ses élèves sont comptés, même sans commit ;
+    les autres identités sont retournées à part avec leur nombre de commits.
+
+    Retourne les élèves, les totaux réels (un commit à plusieurs n'est compté qu'une fois)
+    et les identités non identifiées.
+    """
+    students = collections.defaultdict(lambda: {
+        "names": collections.Counter(), "identities": collections.Counter(),
+        "commits": 0, "lines": 0, "days": set(), "surviving": 0, "ai": 0,
+    })
+    totals = {"commits": 0, "lines": 0, "shared": 0}
+    unknown = collections.Counter()
+    for sha, (participants, date, lines) in commits.items():
+        ai = any(is_ai(name, email) for name, email, _, _ in participants)
+        seen = set()
+        for name, email, raw_name, raw_email in participants:
+            key = email.lower()
+            if key in seen or is_ignored_author(name, email, exclude_patterns):
+                continue
+            if roster is not None and key not in roster:
+                unknown[f"{raw_name} <{raw_email}>"] += 1
+                continue
+            seen.add(key)
+            s = students[key]
+            s["names"][name] += 1
+            s["identities"][f"{raw_name} <{raw_email}>"] += 1
+            s["commits"] += 1
+            s["lines"] += lines
+            s["days"].add(date)
+            s["surviving"] += surviving[sha]
+            s["ai"] += ai
+        if seen:
+            totals["commits"] += 1
+            totals["lines"] += lines
+            totals["shared"] += len(seen) > 1
+    for key, name in (roster or {}).items():
+        if not is_ignored_author(name, key, exclude_patterns):
+            students[key]  # Crée les élèves sans commit
+    for key, s in students.items():
+        s["name"] = roster[key] if roster is not None else s["names"].most_common(1)[0][0]
+        s["days"] = len(s["days"])
+    return list(students.values()), totals, unknown
+
+
+def print_unknown(unknown):
+    print("Non identifiés (absents du mailmap, non comptés) :")
+    for identity, n in unknown.most_common():
+        print(f"  {n:5}  {identity}")
+
+
+def print_identities(students, unknown):
+    for s in sorted(students, key=lambda s: -s["commits"]):
+        print(s["name"] if s["commits"] else f"{s['name']} (aucun commit)")
+        for identity, n in s["identities"].most_common():
+            print(f"  {n:5}  {identity}")
+    if unknown:
+        print()
+        print_unknown(unknown)
+
+
+def percent(ratio):
+    return f"{ratio * 100:.0f} %"
+
+
+def print_report(students, totals, unknown, sources, args):
+    metrics = [("commits", "Commits"), ("lines", "Lignes"), ("days", "Jours"), ("surviving", "Survivantes")]
+    n = len(students)
+    fair = {key: sum(s[key] for s in students) / n for key, _ in metrics}
+    for s in students:
+        s["ratios"] = [s[key] / fair[key] if fair[key] else 0 for key, _ in metrics]
+        s["mean"] = math.prod(s["ratios"]) ** (1 / len(metrics))
+
+    for label, refs, snapshot in sources:
+        prefix = f"{label} | " if len(sources) > 1 else ""
+        print(f"{prefix}Branches : {refs} | Survivantes : {snapshot}")
+    if args.since or args.until:
+        print(f"Période : {args.since or '…'} → {args.until or '…'}")
+    notes = []
+    if totals["shared"]:
+        notes.append(f"dont {totals['shared']} à plusieurs")
+    if totals["fake_merges"]:
+        plural = "s" if totals["fake_merges"] > 1 else ""
+        notes.append(f"{totals['fake_merges']} faux merge{plural} exclu{plural}")
+    notes = f" ({', '.join(notes)})" if notes else ""
+    print(f"{n} élèves | {totals['commits']} commits{notes} | {totals['lines']} lignes\n")
+    if unknown:
+        print_unknown(unknown)
+        print()
+
+    color = sys.stdout.isatty()
+    width = max(len("Élève"), *(len(s["name"]) for s in students))
+    cells = [max(len(label), *(len(f"{s[key]} ({percent(s['ratios'][i])})") for s in students))
+             for i, (key, label) in enumerate(metrics)]
+    mean_width = max(len("Moy. géo."), *(len(percent(s["mean"])) for s in students))
+    print(f"{'Élève':<{width}}  " + "  ".join(f"{label:>{w}}" for (_, label), w in zip(metrics, cells))
+          + f"   {'Moy. géo.':>{mean_width}}")
+    print("-" * (width + sum(c + 2 for c in cells) + 3 + mean_width))
+
+    majority = len(metrics) // 2 + 1
+    for s in sorted(students, key=lambda s: -s["mean"]):
+        row = f"{s['name']:<{width}}  " + "  ".join(
+            f"{f'{s[key]} ({percent(r)})':>{w}}" for (key, _), r, w in zip(metrics, s["ratios"], cells)
+        ) + f"   {percent(s['mean']):>{mean_width}}"
+        if sum(r * 100 >= args.high_threshold for r in s["ratios"]) >= majority:
+            row += "  ▲"
+            if color:
+                row = f"\033[32m{row}\033[0m"
+        elif sum(r * 100 <= args.low_threshold for r in s["ratios"]) >= majority:
+            row += "  ▼"
+            if color:
+                row = f"\033[31m{row}\033[0m"
+        print(row)
+
+    with_ai = sorted((s for s in students if s["ai"]), key=lambda s: -s["ai"])
+    if with_ai:
+        print("\nCommits co-écrits avec une IA : "
+              + ", ".join(f"{s['name']} {s['ai']}/{s['commits']}" for s in with_ai))
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Répartition du travail entre les membres d'une équipe, d'après l'historique Git.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+Chaque valeur est suivie de son pourcentage de la part équitable (100 %).
+
+Identités multiples d'un même élève : les commits sont regroupés par courriel.
+Pour fusionner des courriels différents, utilisez un fichier au format .mailmap :
+  Prénom Nom <prenom.nom@ecole.example> <pseudo@courriel.example>
+Le .mailmap à la racine du dépôt est toujours lu ; --mailmap en ajoute un autre.
+
+Avec --mailmap, ce fichier est aussi la liste de l'équipe : chaque courriel canonique
+est un élève, même sans commit. Les identités absentes du fichier sont listées comme
+non identifiées et ne comptent pas dans la part équitable.
+
+Plusieurs dépôts (ex. frontend et backend) sont analysés ensemble, comme un seul projet.
+
+Un commit avec des trailers « Co-authored-by: Nom <courriel> » compte en entier
+pour l'auteur et pour chaque co-auteur (commit, lignes, jour et survivantes).
+
+Les lignes survivantes sont mesurées sur la première branche analysée (origin/
+si elle existe), à la date de --until s'il est donné ; avec --all, sur HEAD.
+
+Exemples :
+  git teamwork
+  git teamwork --all --since 2026-09-01
+  git teamwork ~/src/equipe-1 --mailmap ~/src/equipe-1.mailmap
+  git teamwork ~/src/equipe-2-front ~/src/equipe-2-back --mailmap ~/src/equipe-2.mailmap
+  git teamwork --identities""",
+    )
+    parser.add_argument("repos", nargs="*", default=["."], metavar="repo",
+                        help="chemin d'un dépôt, répétable : ils sont analysés ensemble (défaut : .)")
+    parser.add_argument("-b", "--branch", action="append",
+                        help=f"branche à analyser, répétable (défaut : {', '.join(DEFAULT_BRANCHES)})")
+    parser.add_argument("--all", action="store_true", help="toutes les branches locales et distantes")
+    parser.add_argument("--since", help="date de début, comme git log (ex. 2026-09-01, « 2 weeks ago »)")
+    parser.add_argument("--until", help="date de fin, comme git log")
+    parser.add_argument("--mailmap", help="fichier .mailmap supplémentaire, qui sert aussi de liste de l'équipe")
+    parser.add_argument("--exclude-author", action="append", default=[], metavar="REGEX",
+                        help="exclure les auteurs correspondant (nom <courriel>), répétable")
+    parser.add_argument("--exclude-file", action="append", default=[], metavar="PATTERN",
+                        help="exclure aussi ces fichiers du compte de lignes (ex. 'data/*'), répétable")
+    parser.add_argument("--no-default-excludes", action="store_true",
+                        help="ne pas exclure les fichiers générés connus (lock, node_modules, etc.)")
+    parser.add_argument("--no-coauthors", action="store_true",
+                        help="ignorer les trailers Co-authored-by (seul l'auteur est crédité)")
+    parser.add_argument("--max-lines", type=int, default=0, metavar="N",
+                        help="compter au plus N lignes par commit (limite l'effet d'un gros import)")
+    parser.add_argument("--low-threshold", type=float, default=60, metavar="PERCENT", help="pourcentage sous lequel signaler ▼ (défaut : 60)")
+    parser.add_argument("--high-threshold", type=float, default=140, metavar="PERCENT", help="pourcentage au-dessus duquel signaler ▲ (défaut : 140)")
+    parser.add_argument("--identities", action="store_true",
+                        help="lister les identités Git regroupées sous chaque élève, pour écrire le .mailmap")
+    args = parser.parse_args()
+
+    config, roster = [], None
+    if args.mailmap:
+        mailmap = Path(args.mailmap).expanduser().resolve()
+        config = [f"mailmap.file={mailmap}"]
+        roster = read_roster(mailmap)
+        if not roster:
+            sys.exit(f"Aucun élève dans {mailmap}.")
+
+    commits, surviving, sources, fake_merges = {}, collections.Counter(), [], 0
+    for path in args.repos:
+        repo = Path(path).expanduser()
+        if args.all:
+            refs = ["--branches", "--remotes", "--tags"]
+        else:
+            branches = args.branch or DEFAULT_BRANCHES
+            refs = resolve_refs(repo, branches)
+            if not refs:
+                sys.exit(f"{repo} : aucune branche trouvée parmi {', '.join(branches)}. Utilisez -b ou --all.")
+        repo_commits, repo_fake_merges = read_commits(repo, refs, args, config)
+        commits.update(repo_commits)
+        fake_merges += repo_fake_merges
+        if args.identities:
+            continue
+
+        # Branche finale pour les lignes survivantes, dans son état à la date de --until
+        final = "HEAD" if args.all else refs[0]
+        rev = git(repo, "rev-list", "-1", *([f"--until={args.until}"] if args.until else []), final).strip()
+        if rev:
+            surviving.update(read_surviving(repo, rev, args))
+        sources.append((repo.resolve().name, "toutes" if args.all else ", ".join(refs),
+                        f"{final} ({rev[:7] or 'aucun commit'})"))
+
+    students, totals, unknown = group_by_student(commits, surviving, args.exclude_author, roster)
+    if not students:
+        sys.exit("Aucun commit trouvé.")
+    if args.identities:
+        print_identities(students, unknown)
+        return
+    totals["fake_merges"] = fake_merges
+    print_report(students, totals, unknown, sources, args)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,5 +1,6 @@
 # Dossiers de compilation latexmk ($out_dir)
 build/
+tmp/
 
 # Fichiers auxiliaires LaTeX
 *.aux
