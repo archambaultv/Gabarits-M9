@@ -321,8 +321,10 @@ def print_report(students, totals, unknown, sources, args):
 
     color = sys.stdout.isatty()
     width = max(len("Élève"), *(len(s["name"]) for s in students))
-    cells = [max(len(label), *(len(f"{s[key]} ({percent(s['ratios'][i])})") for s in students))
-             for i, (key, label) in enumerate(metrics)]
+    # Nombre et pourcentage alignés séparément pour que les chiffres restent en colonne.
+    value_widths = [max(len(str(s[key])) for s in students) for key, _ in metrics]
+    ratio_widths = [max(len(percent(s["ratios"][i])) + 2 for s in students) for i in range(len(metrics))]
+    cells = [max(len(label), vw + 1 + rw) for (_, label), vw, rw in zip(metrics, value_widths, ratio_widths)]
     mean_width = max(len("Moy. géo."), *(len(percent(s["mean"])) for s in students))
     print(f"{'Élève':<{width}}  " + "  ".join(f"{label:>{w}}" for (_, label), w in zip(metrics, cells))
           + f"   {'Moy. géo.':>{mean_width}}")
@@ -331,7 +333,8 @@ def print_report(students, totals, unknown, sources, args):
     majority = len(metrics) // 2 + 1
     for s in sorted(students, key=lambda s: -s["mean"]):
         row = f"{s['name']:<{width}}  " + "  ".join(
-            f"{f'{s[key]} ({percent(r)})':>{w}}" for (key, _), r, w in zip(metrics, s["ratios"], cells)
+            f"{f'{s[key]:>{vw}} ' + f'({percent(r)})'.rjust(rw):>{w}}"
+            for (key, _), r, vw, rw, w in zip(metrics, s["ratios"], value_widths, ratio_widths, cells)
         ) + f"   {percent(s['mean']):>{mean_width}}"
         if sum(r * 100 >= args.high_threshold for r in s["ratios"]) >= majority:
             row += "  ▲"
