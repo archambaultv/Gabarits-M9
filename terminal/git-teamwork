@@ -2,10 +2,10 @@
 """Répartition du travail entre les membres d'une équipe, d'après l'historique Git.
 
 Quatre métriques, chacune exprimée en pourcentage de la part équitable (100 % = sa part) :
-  - commits     : commits sans les merges
-  - lignes      : lignes ajoutées + retirées, sans les fichiers générés
-  - jours       : nombre de jours distincts avec au moins un commit
-  - survivantes : lignes encore présentes dans la branche finale (git blame)
+  - commits          : commits sans les merges
+  - jours            : nombre de jours distincts avec au moins un commit
+  - lignes ±         : lignes ajoutées + retirées, sans les fichiers générés
+  - lignes actuelles : lignes encore présentes dans la branche finale (git blame)
 
 Les faux merges (un seul parent, message « Merge branch … ») sont exclus comme les
 vrais : leur diff contient le travail des autres.
@@ -295,7 +295,7 @@ def percent(ratio):
 
 
 def print_report(students, totals, unknown, sources, args):
-    metrics = [("commits", "Commits"), ("lines", "Lignes"), ("days", "Jours"), ("surviving", "Survivantes")]
+    metrics = [("commits", "Commits"), ("days", "Jours"), ("lines", "Lignes ±"), ("surviving", "Lignes actuelles")]
     n = len(students)
     fair = {key: sum(s[key] for s in students) / n for key, _ in metrics}
     for s in students:
@@ -304,7 +304,7 @@ def print_report(students, totals, unknown, sources, args):
 
     for label, refs, snapshot in sources:
         prefix = f"{label} | " if len(sources) > 1 else ""
-        print(f"{prefix}Branches : {refs} | Survivantes : {snapshot}")
+        print(f"{prefix}Branches : {refs} | Lignes actuelles : {snapshot}")
     if args.since or args.until:
         print(f"Période : {args.since or '…'} → {args.until or '…'}")
     notes = []
@@ -371,9 +371,9 @@ non identifiées et ne comptent pas dans la part équitable.
 Plusieurs dépôts (ex. frontend et backend) sont analysés ensemble, comme un seul projet.
 
 Un commit avec des trailers « Co-authored-by: Nom <courriel> » compte en entier
-pour l'auteur et pour chaque co-auteur (commit, lignes, jour et survivantes).
+pour l'auteur et pour chaque co-auteur (commit, jour, lignes ± et lignes actuelles).
 
-Les lignes survivantes sont mesurées sur la première branche analysée (origin/
+Les lignes actuelles sont mesurées sur la première branche analysée (origin/
 si elle existe), à la date de --until s'il est donné ; avec --all, sur HEAD.
 
 Exemples :
@@ -431,7 +431,7 @@ Exemples :
         if args.identities:
             continue
 
-        # Branche finale pour les lignes survivantes, dans son état à la date de --until
+        # Branche finale pour les lignes actuelles, dans son état à la date de --until
         final = "HEAD" if args.all else refs[0]
         rev = git(repo, "rev-list", "-1", *([f"--until={args.until}"] if args.until else []), final).strip()
         if rev:
