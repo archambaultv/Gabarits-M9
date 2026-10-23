@@ -2,6 +2,10 @@
 build/
 tmp/
 
+# Python
+
+__pycache__/
+
 # Fichiers auxiliaires LaTeX
 *.aux
 *.log
