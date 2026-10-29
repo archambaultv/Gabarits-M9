@@ -6,7 +6,8 @@ Commandes Git pour évaluer rapidement des travaux.
   - `git graph` : graphe des commits avec la date et l'auteur. Accepte les
     options de `git log` (ex. `git graph --all -20`).
 - [git-teamwork](git-teamwork) : répartition du travail entre les membres
-  d'une équipe (commits, lignes modifiées, jours actifs, lignes survivantes).
+  d'une équipe (commits, lignes modifiées, jours actifs, lignes survivantes),
+  avec une frise de l'activité de chacun.
 
 ## Installation
 

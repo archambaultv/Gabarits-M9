@@ -3,9 +3,14 @@
 
 Quatre métriques, chacune exprimée en pourcentage de la part équitable (100 % = sa part) :
   - commits          : commits sans les merges
-  - jours            : nombre de jours distincts avec au moins un commit
+  - jours            : nombre de jours distincts avec au moins une ligne ±
   - lignes ±         : lignes ajoutées + retirées, sans les fichiers générés
   - lignes actuelles : lignes encore présentes dans la branche finale (git blame)
+
+Une ligne vide ne compte pas, ni une ligne dont seuls les espaces changent : reformater
+n'est pas écrire. Un commit compte au plus 1000 lignes (--max-lines).
+
+Une frise montre les lignes ± de chaque élève, du premier au dernier commit de l'équipe.
 
 Les faux merges (un seul parent, message « Merge branch … ») sont exclus comme les
 vrais : leur diff contient le travail des autres.
@@ -28,9 +33,14 @@ import math
 import re
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 
 DEFAULT_BRANCHES = ("main", "dev")
+
+# Nombre maximal de cases de la frise : au-delà, une case regroupe plusieurs jours
+TIMELINE_CELLS = 30
+TIMELINE_LEVELS = "▁▂▃▄▅▆▇█"
 
 # Dossiers dont le contenu est généré, téléchargé ou compilé
 EXCLUDED_DIRS = {
@@ -66,7 +76,9 @@ def git(repo, *args, config=(), input=None):
     cmd = ["git", "-C", str(repo), "-c", "core.quotePath=false"]
     for c in config:
         cmd += ["-c", c]
-    result = subprocess.run(cmd + list(args), check=False, capture_output=True, text=True, input=input)
+    # errors="replace" : un fichier qui n'est pas en UTF-8 ne doit pas planter le diff ou le blame
+    result = subprocess.run(cmd + list(args), check=False, capture_output=True, text=True,
+                            errors="replace", input=input)
     if result.returncode != 0:
         sys.exit(f"Erreur git : {result.stderr.strip()}")
     return result.stdout
@@ -90,15 +102,40 @@ def resolve_refs(repo, branches):
     return refs
 
 
-def renamed_path(path):
-    """Avec -M, numstat affiche « a/{old => new}/f » ou « old => new » : garde le nouveau chemin."""
-    if " => " not in path:
-        return path
-    m = re.match(r"(.*)\{(.*) => (.*)\}(.*)", path)
-    if m:
-        before, _, new, after = m.groups()
-        return (before + new + after).replace("//", "/")
-    return path.split(" => ", 1)[1]
+def patch_path(field):
+    """Chemin d'une ligne « --- a/… » ou « +++ b/… » d'un patch, ou None pour /dev/null."""
+    if field.endswith("\t"):  # Git ajoute une tabulation après un chemin qui contient une espace
+        field = field[:-1]
+    if field == "/dev/null":
+        return None
+    if field.startswith('"'):  # Chemin entre guillemets, avec échappements à la C
+        field = field[1:-1].encode().decode("unicode_escape").encode("latin-1").decode("utf-8", "replace")
+    return field[2:]
+
+
+def count_lines(patch, extra_patterns, use_defaults):
+    """Lignes ajoutées + retirées d'un patch, sans les lignes vides ni les fichiers exclus.
+
+    Un fichier binaire n'a pas de hunk : il ne compte pas.
+    """
+    lines = 0
+    in_hunk = excluded = False
+    old = None
+    for line in patch:
+        if in_hunk and line[:1] in ("+", "-"):
+            lines += not excluded and bool(line[1:].strip())
+        elif line.startswith("diff --git "):
+            in_hunk = excluded = False
+            old = None
+        elif in_hunk:
+            continue  # Contexte, « \ No newline at end of file » ou en-tête de hunk
+        elif line.startswith("--- "):
+            old = patch_path(line[4:])
+        elif line.startswith("+++ "):
+            excluded = is_excluded(patch_path(line[4:]) or old, extra_patterns, use_defaults)
+        elif line.startswith("@@"):
+            in_hunk = True
+    return lines
 
 
 def is_excluded(path, extra_patterns, use_defaults):
@@ -152,7 +189,11 @@ def read_commits(repo, refs, args, config):
     """
     fmt = "%x00" + SEP.join(["%H", "%s", "%aN", "%aE", "%an", "%ae", "%ad",
                              "%(trailers:key=Co-authored-by,valueonly,separator=%x1e)"])
-    log_args = ["log", *refs, "--no-merges", "-M", "--numstat", "--date=short", f"--format={fmt}"]
+    # -w : un reformatage ne compte pas, comme dans read_surviving (blame -w).
+    # Les autres options rendent le patch indépendant de la configuration de l'utilisateur.
+    log_args = ["log", *refs, "--no-merges", "-M", "-w", "-p", "--date=short", f"--format={fmt}",
+                "--no-color", "--no-ext-diff", "--no-textconv", "--no-relative", "--no-show-signature",
+                "--src-prefix=a/", "--dst-prefix=b/"]
     if args.since:
         log_args.append(f"--since={args.since}")
     if args.until:
@@ -162,7 +203,7 @@ def read_commits(repo, refs, args, config):
     commits = {}
     fake_merges = 0
     for record in out.split("\x00")[1:]:
-        header, *stats = record.strip("\n").split("\n")
+        header, *patch = record.split("\n")
         sha, subject, name, email, raw_name, raw_email, date, trailers = header.split(SEP)
         if MERGE_MESSAGE.match(subject):
             fake_merges += 1
@@ -170,16 +211,7 @@ def read_commits(repo, refs, args, config):
         participants = [(name, email, raw_name, raw_email)]
         if not args.no_coauthors:
             participants += [c.strip() for c in trailers.split(TRAILER_SEP) if c.strip()]
-        lines = 0
-        for stat in stats:
-            if not stat:
-                continue
-            added, deleted, path = stat.split("\t", 2)
-            if added == "-":  # Fichier binaire
-                continue
-            if is_excluded(renamed_path(path), args.exclude_file, not args.no_default_excludes):
-                continue
-            lines += int(added) + int(deleted)
+        lines = count_lines(patch, args.exclude_file, not args.no_default_excludes)
         if args.max_lines:
             lines = min(lines, args.max_lines)
         commits[sha] = (participants, date, lines)
@@ -195,6 +227,7 @@ def read_commits(repo, refs, args, config):
 def read_surviving(repo, rev, args):
     """Compte, pour chaque commit, ses lignes encore présentes dans rev (git blame).
 
+    Les lignes vides ne comptent pas, et un commit compte au plus --max-lines lignes.
     Avec --since, les lignes plus anciennes sont attribuées à un commit hors période, donc ignorées.
     """
     counts = collections.Counter()
@@ -209,11 +242,13 @@ def read_surviving(repo, rev, args):
         if args.since:
             blame_args.append(f"--since={args.since}")
         sha = None
-        for line in git(repo, *blame_args, rev, "--", path).splitlines():
+        for line in git(repo, *blame_args, rev, "--", path).split("\n"):
             if line.startswith("\t"):
-                counts[sha] += 1
+                counts[sha] += bool(line[1:].strip())
             elif re.match(r"[0-9a-f]{40,64} \d+ \d+", line):
                 sha = line.split(" ", 1)[0]
+    if args.max_lines:
+        counts = collections.Counter({sha: min(n, args.max_lines) for sha, n in counts.items()})
     return counts
 
 
@@ -233,14 +268,18 @@ def group_by_student(commits, surviving, exclude_patterns, roster=None):
     Avec une liste d'équipe (roster), seuls ses élèves sont comptés, même sans commit ;
     les autres identités sont retournées à part avec leur nombre de commits.
 
+    Un jour ne compte que s'il a au moins une ligne ± : un commit vide ou qui ne fait
+    que reformater ne suffit pas.
+
     Retourne les élèves, les totaux réels (un commit à plusieurs n'est compté qu'une fois)
     et les identités non identifiées.
     """
     students = collections.defaultdict(lambda: {
         "names": collections.Counter(), "identities": collections.Counter(),
-        "commits": 0, "lines": 0, "days": set(), "surviving": 0, "ai": 0,
+        "commits": 0, "lines": 0, "days": set(), "timeline": collections.Counter(),
+        "surviving": 0, "ai": 0,
     })
-    totals = {"commits": 0, "lines": 0, "shared": 0}
+    totals = {"commits": 0, "lines": 0, "shared": 0, "dates": set()}
     unknown = collections.Counter()
     for sha, (participants, date, lines) in commits.items():
         ai = any(is_ai(name, email) for name, email, _, _ in participants)
@@ -258,13 +297,16 @@ def group_by_student(commits, surviving, exclude_patterns, roster=None):
             s["identities"][f"{raw_name} <{raw_email}>"] += 1
             s["commits"] += 1
             s["lines"] += lines
-            s["days"].add(date)
+            if lines:
+                s["days"].add(date)
+                s["timeline"][date] += lines
             s["surviving"] += surviving[sha]
             s["ai"] += ai
         if seen:
             totals["commits"] += 1
             totals["lines"] += lines
             totals["shared"] += len(seen) > 1
+            totals["dates"].add(date)
     for key, name in (roster or {}).items():
         if not is_ignored_author(name, key, exclude_patterns):
             students[key]  # Crée les élèves sans commit
@@ -292,6 +334,33 @@ def print_identities(students, unknown):
 
 def percent(ratio):
     return f"{ratio * 100:.0f} %"
+
+
+def print_timeline(students, dates, width):
+    """Frise des lignes ± de chaque élève, du premier au dernier commit de l'équipe.
+
+    Une case vaut un jour, ou plusieurs si la période dépasse TIMELINE_CELLS jours.
+    La hauteur est logarithmique et commune à l'équipe : · = rien, █ = la case la plus chargée.
+    """
+    first, last = date.fromisoformat(min(dates)), date.fromisoformat(max(dates))
+    span = (last - first).days + 1
+    size = math.ceil(span / TIMELINE_CELLS)
+    cells = {}
+    for s in students:
+        cells[id(s)] = [0] * math.ceil(span / size)
+        for day, lines in s["timeline"].items():
+            cells[id(s)][(date.fromisoformat(day) - first).days // size] += lines
+    peak = max((v for row in cells.values() for v in row), default=0)
+
+    def level(v):
+        if not v:
+            return "·"
+        return TIMELINE_LEVELS[math.ceil(len(TIMELINE_LEVELS) * math.log1p(v) / math.log1p(peak)) - 1]
+
+    unit = "1 jour" if size == 1 else f"{size} jours"
+    print(f"\nFrise des lignes ± : {first} → {last}, une case = {unit}")
+    for s in students:
+        print(f"{s['name']:<{width}}  " + "".join(level(v) for v in cells[id(s)]))
 
 
 def print_report(students, totals, unknown, sources, args):
@@ -331,7 +400,8 @@ def print_report(students, totals, unknown, sources, args):
     print("-" * (width + sum(c + 2 for c in cells) + 3 + mean_width))
 
     majority = len(metrics) // 2 + 1
-    for s in sorted(students, key=lambda s: -s["mean"]):
+    ranked = sorted(students, key=lambda s: -s["mean"])
+    for s in ranked:
         row = f"{s['name']:<{width}}  " + "  ".join(
             f"{f'{s[key]:>{vw}} ' + f'({percent(r)})'.rjust(rw):>{w}}"
             for (key, _), r, vw, rw, w in zip(metrics, s["ratios"], value_widths, ratio_widths, cells)
@@ -346,7 +416,10 @@ def print_report(students, totals, unknown, sources, args):
                 row = f"\033[31m{row}\033[0m"
         print(row)
 
-    with_ai = sorted((s for s in students if s["ai"]), key=lambda s: -s["ai"])
+    if totals["dates"]:
+        print_timeline(ranked, totals["dates"], width)
+
+    with_ai =sorted((s for s in students if s["ai"]), key=lambda s: -s["ai"])
     if with_ai:
         print("\nCommits co-écrits avec une IA : "
               + ", ".join(f"{s['name']} {s['ai']}/{s['commits']}" for s in with_ai))
@@ -399,8 +472,9 @@ Exemples :
                         help="ne pas exclure les fichiers générés connus (lock, node_modules, etc.)")
     parser.add_argument("--no-coauthors", action="store_true",
                         help="ignorer les trailers Co-authored-by (seul l'auteur est crédité)")
-    parser.add_argument("--max-lines", type=int, default=0, metavar="N",
-                        help="compter au plus N lignes par commit (limite l'effet d'un gros import)")
+    parser.add_argument("--max-lines", type=int, default=1000, metavar="N",
+                        help="compter au plus N lignes par commit, en lignes ± et en lignes actuelles "
+                             "(limite l'effet d'un gros import ; défaut : 1000, 0 = sans limite)")
     parser.add_argument("--low-threshold", type=float, default=60, metavar="PERCENT", help="pourcentage sous lequel signaler ▼ (défaut : 60)")
     parser.add_argument("--high-threshold", type=float, default=140, metavar="PERCENT", help="pourcentage au-dessus duquel signaler ▲ (défaut : 140)")
     parser.add_argument("--identities", action="store_true",
