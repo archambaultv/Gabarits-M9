@@ -8,6 +8,11 @@ Commandes Git pour évaluer rapidement des travaux.
 - [git-teamwork](git-teamwork) : répartition du travail entre les membres
   d'une équipe (commits, lignes modifiées, jours actifs, lignes survivantes),
   avec une frise de l'activité de chacun.
+- [gh-teamwork](gh-teamwork) : pratiques d'équipe sur GitHub (pushes directs sur
+  `main`, PR fusionnées sans revue, revues superficielles, CI rouge, tickets),
+  sous forme de règles avec un verdict. Utilise le même `.mailmap` que
+  git-teamwork. Demande [GitHub CLI](https://cli.github.com) authentifié
+  (`gh auth login`) et un clone local du dépôt.
 
 ## Installation
 
@@ -24,6 +29,12 @@ Ajouter à `~/.bashrc` :
 export PATH="$PATH:$HOME/src/Gabarits-M9/terminal"
 ```
 
+Pour lancer gh-teamwork comme `gh teamwork` :
+
+```bash
+gh alias set --shell teamwork 'gh-teamwork "$@"'
+```
+
 ## Aide
 
-`git <commande> -h`
+`git <commande> -h`, `gh-teamwork -h`

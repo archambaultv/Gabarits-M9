@@ -1,0 +1,943 @@
+#!/usr/bin/env python3
+"""Pratiques d'équipe sur GitHub : pull requests, revues et pushes sur les branches protégées.
+
+Le pendant de git-teamwork : git-teamwork dit qui a fait quoi d'après l'historique Git,
+gh-teamwork dit comment l'équipe a travaillé ensemble d'après GitHub. Il faut `gh`,
+authentifié, et un clone local de chaque dépôt (pour le .mailmap et le contenu des pushes).
+
+Le rapport est une liste de règles, chacune avec un verdict :
+  ✗  majeur : ce qu'une entreprise bloquerait (push direct, fusion sans revue…)
+  ⚠  à corriger : une mauvaise habitude (revue superficielle, PR sans ticket…)
+  ✓  respecté
+  ·  information, sans jugement
+  –  sans objet (un seul élève, aucune CI…)
+
+Règles (identifiants pour --ignore) :
+  push           push direct sur une branche protégée, hors PR
+  force          force-push sur une branche protégée
+  revision       PR fusionnée sans aucune revue ni commentaire d'une autre personne
+  ci             PR fusionnée alors que la CI de son dernier commit était rouge
+  approve        PR revue, mais approuvée autrement que par le bouton Approve de GitHub
+                 (un commentaire « approuvé ») : une branche protégée l'aurait refusée
+  revue          revue superficielle : moins d'un mot de revue par 50 lignes modifiées
+                 (revues, commentaires en ligne et dans la conversation ; PR de 50 lignes et plus)
+  perimee        commits ajoutés après la dernière approbation, puis fusion sans nouvelle approbation
+  concentration  un seul élève fait plus de 60 % des revues (3 élèves et plus)
+  ticket         PR qui ne mentionne aucun ticket
+
+Les branches protégées sont la branche par défaut et dev ou develop si elles existent
+(-b pour les choisir). Une PR d'une branche protégée vers une autre (dev → main) est une
+livraison : elle n'est pas soumise aux règles.
+
+Les pushes viennent de l'API « activity » de GitHub, qui distingue un push d'une fusion de
+PR et nomme le compte qui a poussé. Les pushes du premier jour (mise en place du dépôt) sont
+comptés à part. Un push qui ne touche que la documentation (docs/, *.md, images) est
+signalé comme tel : seul, il ne vaut que ⚠.
+
+Les lignes d'une PR excluent les fichiers générés, comme git-teamwork.
+
+Identités : un login GitHub est relié aux courriels de ses commits, puis au .mailmap. Un
+login qu'aucun commit ne relie se déclare dans le .mailmap par son courriel noreply :
+  Prénom Nom <prenom@ecole.example> <12345+login@users.noreply.github.com>
+Les bots et les assistants IA (Copilot, Claude…) ne sont pas des élèves.
+"""
+
+import argparse
+import collections
+import json
+import math
+import re
+import statistics
+import subprocess
+import sys
+import tempfile
+from datetime import date, datetime, time, timedelta
+from importlib.machinery import SourceFileLoader
+from importlib.util import module_from_spec, spec_from_loader
+from pathlib import Path
+
+
+def load_git_teamwork():
+    """git-teamwork est un script sans extension : on le charge comme module."""
+    path = Path(__file__).resolve().with_name("git-teamwork")
+    loader = SourceFileLoader("git_teamwork", str(path))
+    module = module_from_spec(spec_from_loader("git_teamwork", loader))
+    loader.exec_module(module)
+    return module
+
+
+gt = load_git_teamwork()
+
+RULES = ("push", "force", "revision", "ci", "approve", "revue", "perimee", "concentration", "ticket")
+EXTRA_PROTECTED = ("dev", "develop")
+
+# Une PR plus petite n'exige aucun mot de revue ; au-delà, un mot par WORDS_PER_LINES lignes
+REVIEW_MIN_LINES = 50
+WORDS_PER_LINES = 50
+CONCENTRATION = 0.6
+CONCENTRATION_MIN_REVIEWS = 5
+
+DOC_DIRS = ("docs/", "doc/")
+DOC_SUFFIXES = (".md", ".mdx", ".txt", ".rst", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".pdf", ".webp")
+
+NOREPLY = re.compile(r"(?:\d+\+)?([^@\s]+)@users\.noreply\.github\.com", re.IGNORECASE)
+GITHUB_REMOTE = re.compile(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?/?$")
+TICKET = re.compile(r"#\d+")
+TICKET_BRANCH = re.compile(r"(?:^|/)#?\d+(?:[-_]|$)")
+ZERO_SHA = re.compile(r"0+")
+
+COLORS = {"✗": "31", "⚠": "33", "✓": "32"}
+
+PR_QUERY = """
+query($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(first: 20, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        number title body url state createdAt mergedAt baseRefName headRefName
+        author { __typename login }
+        mergedBy { __typename login }
+        mergeCommit { oid }
+        closingIssuesReferences { totalCount }
+        files(first: 100) { totalCount nodes { path additions deletions } }
+        reviews(first: 50) {
+          nodes { author { __typename login } state body submittedAt comments(first: 30) { nodes { body } } }
+        }
+        comments(first: 50) { nodes { author { __typename login } body } }
+        commits(first: 100) {
+          nodes { commit { committedDate parents { totalCount } author { name email user { login } } } }
+        }
+        lastCommit: commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+      }
+    }
+  }
+}"""
+
+HISTORY_QUERY = """
+query($owner: String!, $name: String!, $ref: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    ref(qualifiedName: $ref) {
+      target {
+        ... on Commit {
+          history(first: 100, after: $cursor) {
+            pageInfo { hasNextPage endCursor }
+            nodes { author { name email user { login } } }
+          }
+        }
+      }
+    }
+  }
+}"""
+
+REPO_QUERY = """
+query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) { defaultBranchRef { name } issues { totalCount } }
+}"""
+
+
+class GhError(Exception):
+    pass
+
+
+def gh(*args):
+    try:
+        result = subprocess.run(["gh", *args], check=False, capture_output=True, text=True)
+    except FileNotFoundError:
+        sys.exit("gh est introuvable : installez GitHub CLI (https://cli.github.com) et faites « gh auth login ».")
+    if result.returncode != 0:
+        raise GhError(result.stderr.strip())
+    return result.stdout
+
+
+def graphql(query, **variables):
+    args = ["api", "graphql", "-f", f"query={query}"]
+    for key, value in variables.items():
+        if value is not None:
+            args += ["-f", f"{key}={value}"]
+    return json.loads(gh(*args))["data"]
+
+
+def graphql_nodes(query, path, **variables):
+    """Les nœuds d'une connexion, page par page. path mène de data à la connexion."""
+    cursor = None
+    while True:
+        conn = graphql(query, cursor=cursor, **variables)
+        for key in path:
+            conn = (conn or {}).get(key)
+        if not conn:
+            return
+        yield from conn["nodes"]
+        if not conn["pageInfo"]["hasNextPage"]:
+            return
+        cursor = conn["pageInfo"]["endCursor"]
+
+
+def rest_lines(endpoint):
+    """Un point d'accès REST paginé qui retourne une liste, élément par élément."""
+    out = gh("api", "--paginate", endpoint, "--jq", ".[] | @json")
+    return [json.loads(line) for line in out.splitlines() if line]
+
+
+def run_git(repo, *args):
+    """git sans quitter en cas d'erreur (objet absent après un force-push, par exemple)."""
+    result = subprocess.run(["git", "-C", str(repo), "-c", "core.quotePath=false", *args],
+                            check=False, capture_output=True, text=True, errors="replace")
+    return result.stdout if result.returncode == 0 else None
+
+
+def parse_time(value):
+    """Horodatage ISO de GitHub (UTC) → heure locale."""
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone() if value else None
+
+
+def parse_bound(value, repo, end):
+    """--since / --until : une date, une date et heure, ou une étiquette Git (ex. beta-v1)."""
+    if value is None:
+        return None
+    try:
+        day = date.fromisoformat(value)
+        # --until est inclusif : jusqu'à la fin de la journée
+        return datetime.combine(day + timedelta(days=end), time()).astimezone()
+    except ValueError:
+        pass
+    try:
+        moment = datetime.fromisoformat(value)
+        return moment.astimezone()
+    except ValueError:
+        pass
+    out = run_git(repo, "log", "-1", "--format=%cI", value)
+    if not out:
+        sys.exit(f"{value} : ni une date (AAAA-MM-JJ) ni une référence Git de {repo}.")
+    moment = datetime.fromisoformat(out.strip()).astimezone()
+    return moment + timedelta(seconds=1) if end else moment
+
+
+def github_slug(repo):
+    url = run_git(repo, "remote", "get-url", "origin")
+    if url is None:
+        sys.exit(f"{repo} : pas un dépôt Git avec un remote origin.")
+    m = GITHUB_REMOTE.search(url.strip())
+    if not m:
+        sys.exit(f"{repo} : origin ({url.strip()}) n'est pas un dépôt GitHub.")
+    return m.group(1), m.group(2)
+
+
+def words(text):
+    return len((text or "").split())
+
+
+def is_doc(path):
+    return path.startswith(DOC_DIRS) or path.lower().endswith(DOC_SUFFIXES)
+
+
+def is_bot(actor, exclude_patterns=()):
+    """Un compte bot, un assistant IA, ou un compte exclu par --exclude-author."""
+    if not actor:
+        return False
+    login = actor.get("login") or ""
+    if actor.get("__typename") == "Bot" or actor.get("type") == "Bot" or login.endswith("[bot]"):
+        return True
+    if gt.is_ai(login, ""):
+        return True
+    return any(re.search(p, login, re.IGNORECASE) for p in exclude_patterns)
+
+
+# ---------------------------------------------------------------------------
+# Lecture des données GitHub
+# ---------------------------------------------------------------------------
+
+def pr_lines(slug, pr, args):
+    """Lignes ± d'une PR, sans les fichiers générés. Au-delà de 100 fichiers, on passe par REST."""
+    files = pr["files"]["nodes"]
+    if pr["files"]["totalCount"] > len(files):
+        files = rest_lines(f"repos/{slug}/pulls/{pr['number']}/files?per_page=100")
+        files = [{"path": f["filename"], "additions": f["additions"], "deletions": f["deletions"]} for f in files]
+    return sum(f["additions"] + f["deletions"] for f in files
+               if not gt.is_excluded(f["path"], args.exclude_file, not args.no_default_excludes))
+
+
+def read_prs(owner, name, args, identities):
+    slug = f"{owner}/{name}"
+    prs = []
+    for raw in graphql_nodes(PR_QUERY, ["repository", "pullRequests"], owner=owner, name=name):
+        commits = []
+        for node in raw["commits"]["nodes"]:
+            c = node["commit"]
+            identities.add_commit(c["author"])
+            commits.append({"at": parse_time(c["committedDate"]), "merge": c["parents"]["totalCount"] > 1})
+        last = raw["lastCommit"]["nodes"]
+        rollup = last[0]["commit"]["statusCheckRollup"] if last else None
+        prs.append({
+            "slug": slug,
+            "number": raw["number"],
+            "title": raw["title"],
+            "url": raw["url"],
+            "state": raw["state"],
+            "created": parse_time(raw["createdAt"]),
+            "merged": parse_time(raw["mergedAt"]),
+            "base": raw["baseRefName"],
+            "head": raw["headRefName"],
+            "author": raw["author"],
+            "merged_by": raw["mergedBy"],
+            "merge_oid": (raw["mergeCommit"] or {}).get("oid"),
+            "linked": bool(raw["closingIssuesReferences"]["totalCount"]
+                           or TICKET.search(raw["title"] or "") or TICKET.search(raw["body"] or "")
+                           or TICKET_BRANCH.search(raw["headRefName"] or "")),
+            "lines": pr_lines(slug, raw, args),
+            "reviews": [{"author": r["author"], "state": r["state"], "at": parse_time(r["submittedAt"]),
+                         "words": words(r["body"]) + sum(words(c["body"]) for c in r["comments"]["nodes"])}
+                        for r in raw["reviews"]["nodes"]],
+            "comments": [{"author": c["author"], "words": words(c["body"])} for c in raw["comments"]["nodes"]],
+            "commits": commits,
+            "ci": (rollup or {}).get("state"),
+        })
+    return prs
+
+
+def read_pushes(repo, owner, name, protected):
+    """Mises à jour des branches protégées, d'après l'API activity, ou None si elle est inaccessible."""
+    try:
+        events = rest_lines(f"repos/{owner}/{name}/activity?per_page=100")
+    except GhError as e:
+        print(f"{owner}/{name} : activité inaccessible ({e}), règles push et force sans objet.", file=sys.stderr)
+        return None, None
+    pushes = []
+    first_day = None
+    for e in events:
+        if e["activity_type"] not in ("push", "force_push"):
+            continue
+        at = parse_time(e["timestamp"])
+        first_day = min(first_day or at.date(), at.date())
+        branch = e["ref"].removeprefix("refs/heads/")
+        if branch not in protected:
+            continue
+        push = {"slug": f"{owner}/{name}", "at": at, "branch": branch, "force": e["activity_type"] == "force_push",
+                "actor": e["actor"], "after": e["after"], "files": None, "commits": None, "subject": ""}
+        before = e["before"]
+        if before and not ZERO_SHA.fullmatch(before):
+            files = run_git(repo, "diff", "--name-only", before, e["after"])
+            count = run_git(repo, "rev-list", "--count", f"{before}..{e['after']}")
+            if files is not None:
+                push["files"] = [f for f in files.splitlines() if f]
+            if count is not None:
+                push["commits"] = int(count)
+        push["subject"] = (run_git(repo, "log", "-1", "--format=%s", e["after"]) or "").strip()
+        pushes.append(push)
+    for push in pushes:
+        push["setup"] = push["at"].date() == first_day
+        push["docs"] = bool(push["files"]) and all(is_doc(f) for f in push["files"])
+    return pushes, first_day
+
+
+def read_protection(owner, name, branch):
+    """True si la branche est protégée (protection classique ou ruleset), None si inconnu."""
+    try:
+        protected = gh("api", f"repos/{owner}/{name}/branches/{branch}", "--jq", ".protected").strip() == "true"
+        rules = int(gh("api", f"repos/{owner}/{name}/rules/branches/{branch}", "--jq", "length").strip() or 0)
+        return protected or rules > 0
+    except (GhError, ValueError):
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Identités : login GitHub → courriels des commits → .mailmap → élève
+# ---------------------------------------------------------------------------
+
+class Identities:
+    def __init__(self, roster, exclude_patterns):
+        self.roster = roster
+        self.exclude = exclude_patterns
+        self.contacts = collections.defaultdict(collections.Counter)  # login → {« nom <courriel> »: n}
+        self.students = {}  # login (minuscules) → clé d'élève
+        self.names = {}  # clé d'élève → nom affiché
+        self.unknown = collections.Counter()  # login non identifié → nombre d'actions (PR, revues, pushes)
+
+    def add_commit(self, author):
+        login = ((author or {}).get("user") or {}).get("login")
+        if login and author.get("email"):
+            self.contacts[login.lower()][f"{author['name']} <{author['email']}>"] += 1
+
+    def resolve(self, repo, config, mailmap_files, logins):
+        """Relie chaque login à un élève : noreply du .mailmap, sinon courriel le plus fréquent."""
+        noreply = {}
+        for path in mailmap_files:
+            for line in path.read_text().splitlines():
+                contacts = re.findall(r"([^<>]*)<([^<>]*)>", line.split("#", 1)[0])
+                if not contacts:
+                    continue
+                canon_name, canon_email = (part.strip() for part in contacts[0])
+                for _, email in contacts:
+                    if m := NOREPLY.fullmatch(email.strip()):
+                        noreply[m.group(1).lower()] = (canon_name, canon_email)
+
+        all_contacts = sorted({c for counter in self.contacts.values() for c in counter})
+        mapped = gt.map_contacts(repo, all_contacts, config)
+        names = collections.defaultdict(collections.Counter)
+        for login in sorted(logins):
+            candidates = collections.Counter()
+            if login in noreply:
+                name, email = noreply[login]
+                candidates[(name, email.lower())] = 1
+            else:
+                for contact, n in self.contacts[login].items():
+                    if contact in mapped:
+                        name, email = mapped[contact][:2]
+                        candidates[(name, email.lower())] += n
+            if self.roster is not None:
+                in_roster = collections.Counter({k: n for k, n in candidates.items() if k[1] in self.roster})
+                candidates = in_roster or collections.Counter()
+            if candidates:
+                (name, key), _ = candidates.most_common(1)[0]
+            elif self.roster is None:
+                name, key = login, f"@{login}"
+            else:
+                continue  # Non identifié
+            self.students[login] = key
+            names[key][name or login] += 1
+        for key, counter in names.items():
+            self.names[key] = self.roster[key] if self.roster is not None else counter.most_common(1)[0][0]
+        for key, name in (self.roster or {}).items():
+            self.names.setdefault(key, name)
+
+    def key(self, actor):
+        """Clé de l'élève, ou None pour un bot, un compte supprimé ou un login non identifié."""
+        if not actor or not actor.get("login") or is_bot(actor, self.exclude):
+            return None
+        return self.students.get(actor["login"].lower())
+
+
+# ---------------------------------------------------------------------------
+# Analyse
+# ---------------------------------------------------------------------------
+
+def in_period(moment, since, until):
+    return moment is not None and (since is None or moment >= since) and (until is None or moment < until)
+
+
+def other_humans(pr, author_key, ids, items):
+    """Revues ou commentaires d'une personne autre que l'auteur (bots exclus)."""
+    out = []
+    for item in items:
+        actor = item["author"]
+        if not actor or is_bot(actor, ids.exclude):
+            continue
+        key = ids.key(actor)
+        login = actor["login"].lower()
+        if (key or f"?{login}") != author_key and login != (pr["author"] or {}).get("login", "").lower():
+            out.append((key, item))
+    return out
+
+
+def analyse(prs, pushes, protected, ids, args):
+    since, until = args.since_dt, args.until_dt
+    students = {key: {"name": name, "pr": 0, "unreviewed": 0, "push": 0, "force": 0, "reviews": 0, "superficial": 0}
+                for key, name in ids.names.items()}
+    merged = [p for p in prs if p["state"] == "MERGED" and in_period(p["merged"], since, until)]
+    delivery = [p for p in merged if p["head"] in protected and p["base"] in protected]
+    by_bot = [p for p in merged if p not in delivery and is_bot(p["author"], ids.exclude)]
+    regular, by_unknown = [], []
+    for p in merged:
+        if p in delivery or p in by_bot:
+            continue
+        p["author_key"] = ids.key(p["author"])
+        if p["author_key"] is None:
+            by_unknown.append(p)
+            continue
+        p["merger_key"] = ids.key(p["merged_by"])
+        regular.append(p)
+        students[p["author_key"]]["pr"] += 1
+
+    rows = {r: [] for r in RULES}
+    stats = {"merged": merged, "delivery": delivery, "by_bot": by_bot, "regular": regular, "by_unknown": by_unknown,
+             "unmerged": [p for p in prs if p["state"] != "MERGED" and in_period(p["created"], since, until)]}
+
+    reviewers = collections.Counter()
+    matrix = collections.Counter()
+    iterated = 0
+    reviewed, reviewed_big, approved = [], [], []
+    for p in regular:
+        reviews = other_humans(p, p["author_key"], ids, p["reviews"])
+        comments = [(k, c) for k, c in other_humans(p, p["author_key"], ids, p["comments"]) if c["words"]]
+        approvals = [r for _, r in reviews if r["state"] == "APPROVED"]
+        commits = [c["at"] for c in p["commits"] if not c["merge"] and c["at"]]
+        reviewer_keys = {k for k, _ in reviews} | {k for k, _ in comments}
+        for key in reviewer_keys - {None}:
+            students[key]["reviews"] += 1
+            reviewers[key] += 1
+            matrix[(p["author_key"], key)] += 1
+
+        if not reviewer_keys:
+            # Personne d'autre n'a laissé de trace : ni revue, ni commentaire
+            rows["revision"].append(p)
+            students[p["author_key"]]["unreviewed"] += 1
+        else:
+            reviewed.append(p)
+            if not approvals:
+                rows["approve"].append(p)
+            said = sum(r["words"] for _, r in reviews) + sum(c["words"] for _, c in comments)
+            if p["lines"] >= REVIEW_MIN_LINES:
+                reviewed_big.append(p)
+                if said < p["lines"] / WORDS_PER_LINES:
+                    p["said"] = said
+                    rows["revue"].append(p)
+                    for key in reviewer_keys - {None}:
+                        students[key]["superficial"] += 1
+            dated = [r["at"] for _, r in reviews if r["at"]]
+            if any(r["state"] == "CHANGES_REQUESTED" for _, r in reviews) or (
+                    dated and any(c > min(dated) for c in commits)):
+                iterated += 1
+        if approvals:
+            approved.append(p)
+            last_approval = max(r["at"] for r in approvals if r["at"])
+            if commits and max(commits) > last_approval:
+                rows["perimee"].append(p)
+        if p["ci"] in ("FAILURE", "ERROR"):
+            rows["ci"].append(p)
+        if not p["linked"]:
+            rows["ticket"].append(p)
+    stats.update(reviewers=reviewers, matrix=matrix, iterated=iterated, reviewed=len(reviewed),
+                 reviewed_big=len(reviewed_big), approved=len(approved),
+                 with_ci=sum(1 for p in regular if p["ci"]))
+
+    if pushes is not None:
+        stats["setup"] = 0
+        for push in pushes:
+            if not in_period(push["at"], since, until) or push["after"] in args.merge_oids:
+                continue
+            key = ids.key(push["actor"])
+            if key is None and (is_bot(push["actor"], ids.exclude) or not push["actor"]):
+                continue
+            if push["setup"]:
+                stats["setup"] += 1
+                continue
+            push["key"] = key
+            rows["push"].append(push)
+            if push["force"]:
+                rows["force"].append(push)
+            if key is not None:
+                students[key]["push"] += 1
+                students[key]["force"] += push["force"]
+    return students, rows, stats
+
+
+# ---------------------------------------------------------------------------
+# Rapport
+# ---------------------------------------------------------------------------
+
+def plural(n, word, suffix="s"):
+    return f"{n} {word}{suffix if n > 1 else ''}"
+
+
+def ratio(part, whole):
+    return f"{part}/{whole} ({part * 100 / whole:.0f} %)" if whole else "0"
+
+
+def evaluate(students, rows, stats, issues, n, args):
+    """Une ligne par règle : (symbole, libellé, constat), dans l'ordre de gravité."""
+    regular = stats["regular"]
+    out = []
+    if not regular:
+        out.append(("✗", "Aucune PR fusionnée", "le travail arrive autrement que par PR"))
+
+    def na(reason):
+        return "–", reason
+
+    def rule(name, label, verdict):
+        if name not in args.ignore:
+            out.append((verdict[0], label, verdict[1]))
+
+    branches = ", ".join(args.protected)
+    if stats.get("setup") is None:
+        rule("push", f"Push direct sur {branches}", na("activité GitHub inaccessible"))
+        rule("force", "Force-push sur une branche protégée", na("activité GitHub inaccessible"))
+    else:
+        pushes = rows["push"]
+        code = [p for p in pushes if not p["docs"]]
+        authors = {p["key"] or p["actor"]["login"] for p in pushes}
+        text = f"{plural(len(pushes), 'push', 'es')} par {plural(len(authors), 'personne')}" if pushes else "aucun"
+        if len(code) < len(pushes):
+            text += f", dont {len(pushes) - len(code)} docs seulement"
+        rule("push", f"Push direct sur {branches}", ("✗" if code else "⚠" if pushes else "✓", text))
+        forced = rows["force"]
+        rule("force", "Force-push sur une branche protégée", ("✗", str(len(forced))) if forced else ("✓", "aucun"))
+
+    blocked = na("un seul élève") if n < 2 else na("aucune PR") if not regular else None
+
+    bad = rows["revision"]
+    self_merged = sum(1 for p in bad if p["merger_key"] == p["author_key"])
+    text = ratio(len(bad), len(regular)) + (f", dont {self_merged} fusionnées par leur auteur" if self_merged else "")
+    rule("revision", "Fusion sans revue d'un coéquipier", blocked or ("✗" if bad else "✓", text))
+
+    with_ci = stats["with_ci"]
+    rule("ci", "Fusion avec la CI rouge", (na("aucune PR") if not regular else na("aucune CI") if not with_ci else
+                                           ("✗" if rows["ci"] else "✓",
+                                            f"{ratio(len(rows['ci']), with_ci)} des PR avec CI")))
+
+    reviewed = stats["reviewed"]
+    rule("approve", "Revue sans le bouton Approve", blocked or (
+        na("aucune PR revue") if not reviewed else
+        ("⚠" if rows["approve"] else "✓", f"{ratio(len(rows['approve']), reviewed)} des PR revues")))
+
+    big = stats["reviewed_big"]
+    rule("revue", "Revue superficielle", blocked or (
+        na(f"aucune PR revue de {REVIEW_MIN_LINES} lignes et plus") if not big else
+        ("⚠" if rows["revue"] else "✓",
+         f"{ratio(len(rows['revue']), big)} des PR revues de {REVIEW_MIN_LINES} lignes et plus")))
+
+    approved = stats["approved"]
+    rule("perimee", "Commits après la dernière approbation", blocked or (
+        na("aucune PR approuvée") if not approved else
+        ("⚠" if rows["perimee"] else "✓", f"{ratio(len(rows['perimee']), approved)} des PR approuvées")))
+
+    reviewers = stats["reviewers"]
+    total = sum(reviewers.values())
+    if n < 3:
+        conc = na("moins de 3 élèves")
+    elif total < CONCENTRATION_MIN_REVIEWS:
+        conc = na(f"moins de {CONCENTRATION_MIN_REVIEWS} revues")
+    else:
+        key, top = reviewers.most_common(1)[0]
+        share = top / total
+        conc = ("⚠" if share > CONCENTRATION else "✓", f"{students[key]['name']} fait {share * 100:.0f} % des revues")
+    rule("concentration", "Revues concentrées sur un élève", conc)
+
+    if not regular:
+        tick = na("aucune PR")
+    elif not issues:
+        tick = ("⚠", "aucun ticket dans le dépôt")
+    else:
+        tick = ("⚠" if rows["ticket"] else "✓", f"{ratio(len(regular) - len(rows['ticket']), len(regular))}")
+    rule("ticket", "PR liée à un ticket", tick)
+
+    if regular:
+        sizes = [p["lines"] for p in regular]
+        out.append(("·", "Taille des PR", f"médiane {statistics.median(sizes):.0f} lignes, max {max(sizes)}"))
+        if stats["reviewed"]:
+            out.append(("·", "Modifiée après revue", f"{ratio(stats['iterated'], stats['reviewed'])} des PR revues"))
+    protection = ", ".join(f"{b} {'oui' if v else 'non' if v is not None else '?'}"
+                           for b, v in args.protection.items())
+    out.append(("·", "Protection sur GitHub", protection))
+    if stats["by_bot"]:
+        out.append(("·", "PR ouvertes par une IA ou un bot", str(len(stats["by_bot"]))))
+    return out
+
+
+def colored(symbol, text, color):
+    return f"\033[{COLORS[symbol]}m{text}\033[0m" if color and symbol in COLORS else text
+
+
+def print_rules(rules, color):
+    width = max(len(label) for _, label, _ in rules) + 2
+    print(f"  {'Règle':<{width}}Constat")
+    print("-" * (width + 2 + max(len(text) for _, _, text in rules)))
+    for symbol, label, text in rules:
+        print(colored(symbol, f"{symbol} {label:<{width}}{text}", color))
+
+
+def print_students(students, color):
+    cols = [("pr", "PR"), ("unreviewed", "sans revue"), ("push", "push"), ("reviews", "revues"), ("superficial", "superf.")]
+    def value(s, key):
+        return f"{s[key]}" + (f" ({s['force']} forcé{'s' if s['force'] > 1 else ''})" if key == "push" and s["force"] else "")
+
+    width = max(len("Élève"), *(len(s["name"]) for s in students))
+    widths = {key: max(len(label), 4, *(len(value(s, key)) for s in students)) for key, label in cols}
+    print(f"{'Élève':<{width}}  " + "  ".join(f"{label:>{widths[key]}}" for key, label in cols))
+    print("-" * (width + sum(w + 2 for w in widths.values())))
+    for s in sorted(students, key=lambda s: (-s["pr"], -s["reviews"], s["name"])):
+        cells = []
+        for key, label in cols:
+            cell = f"{value(s, key):>{widths[key]}}"
+            if key in ("unreviewed", "push") and s[key]:
+                cell = colored("✗", cell, color)
+            elif key == "superficial" and s[key]:
+                cell = colored("⚠", cell, color)
+            cells.append(cell)
+        print(f"{s['name']:<{width}}  " + "  ".join(cells))
+
+
+def initials(name):
+    parts = re.findall(r"[^\W\d_]+|\d+", name)
+    return "".join(p[0] for p in parts[:3]).upper() if len(parts) > 1 else name[:3]
+
+
+def print_matrix(students, matrix):
+    people = sorted(students, key=lambda k: students[k]["name"])
+    people = [k for k in people if any(matrix[(k, o)] or matrix[(o, k)] for o in people)]
+    tags = {}
+    for k in people:
+        tag = initials(students[k]["name"])
+        while tag in tags.values():
+            tag += "'"
+        tags[k] = tag
+    labels = {k: f"{students[k]['name']} ({tags[k]})" for k in people}
+    width = max(len(v) for v in labels.values())
+    cell = max(4, *(len(t) for t in tags.values())) + 1
+    print("\nQui relit qui (ligne = auteur de la PR, colonne = réviseur)")
+    print(" " * width + "".join(f"{tags[k]:>{cell}}" for k in people))
+    for a in people:
+        print(f"{labels[a]:<{width}}" + "".join(
+            f"{('·' if a == r else matrix[(a, r)] or '·'):>{cell}}" for r in people))
+
+
+def print_timeline(series, since, until):
+    """Frise d'une ou plusieurs séries de dates, comme celle de git-teamwork."""
+    days = [d for _, dates in series for d in dates]
+    if not days:
+        return
+    first = since.date() if since else min(days)
+    last = (until - timedelta(seconds=1)).date() if until else max(days)
+    span = (last - first).days + 1
+    size = math.ceil(span / gt.TIMELINE_CELLS)
+    rows = []
+    for label, dates in series:
+        cells = [0] * math.ceil(span / size)
+        for d in dates:
+            if first <= d <= last:
+                cells[(d - first).days // size] += 1
+        rows.append((label, cells))
+    peak = max((v for _, cells in rows for v in cells), default=0)
+
+    def level(v):
+        if not v:
+            return "·"
+        levels = gt.TIMELINE_LEVELS
+        return levels[math.ceil(len(levels) * math.log1p(v) / math.log1p(peak)) - 1]
+
+    unit = "1 jour" if size == 1 else f"{size} jours"
+    width = max(len(label) for label, _ in rows)
+    print(f"\nFrise : {first} → {last}, une case = {unit}")
+    for label, cells in rows:
+        print(f"{label:<{width}}  " + "".join(level(v) for v in cells))
+
+
+def short_time(moment):
+    return moment.strftime("%Y-%m-%d %H:%M")
+
+
+def duration(start, end):
+    minutes = (end - start).total_seconds() / 60
+    if minutes < 60:
+        return f"{minutes:.0f} min"
+    if minutes < 48 * 60:
+        return f"{minutes / 60:.0f} h"
+    return f"{minutes / 1440:.0f} j"
+
+
+def print_details(students, rows, args):
+    def name(key, actor=None):
+        if key in students:
+            return students[key]["name"]
+        return (actor or {}).get("login") or "?"
+
+    def pr_line(p, extra=""):
+        merger = name(p.get("merger_key"), p["merged_by"])
+        return (f"  #{p['number']:<4} {name(p['author_key'])}  {p['lines']} lignes  "
+                f"fusionnée par {merger} après {duration(p['created'], p['merged'])}{extra}  {p['url']}")
+
+    titles = {
+        "push": "Push direct sur une branche protégée",
+        "force": "Force-push sur une branche protégée",
+        "revision": "Fusion sans revue d'un coéquipier",
+        "ci": "Fusion avec la CI rouge",
+        "approve": "Revue sans le bouton Approve",
+        "revue": "Revue superficielle",
+        "perimee": "Commits après la dernière approbation",
+        "ticket": "PR sans ticket",
+    }
+    for rule, title in titles.items():
+        if rule in args.ignore or not rows[rule]:
+            continue
+        print(f"\n{title} — {len(rows[rule])}")
+        for item in rows[rule]:
+            if rule in ("push", "force"):
+                files = item["files"]
+                kind = "?" if files is None else "docs" if item["docs"] else "code"
+                commits = "?" if item["commits"] is None else item["commits"]
+                prefix = f"{item['slug']} " if len(args.slugs) > 1 else ""
+                print(f"  {short_time(item['at'])}  {prefix}{item['branch']}  {name(item['key'], item['actor'])}"
+                      f"{'  force-push' if item['force'] else ''}  {commits} commit(s), {kind}  {item['subject'][:60]}")
+            elif rule == "revue":
+                print(pr_line(item, f", {plural(item['said'], 'mot')} de revue"))
+            else:
+                print(pr_line(item))
+
+
+def print_identities(ids):
+    by_key = collections.defaultdict(list)
+    for login, key in ids.students.items():
+        by_key[key].append(login)
+    for key, name in sorted(ids.names.items(), key=lambda kv: kv[1]):
+        logins = by_key.get(key, [])
+        print(name if logins else f"{name} (aucun login GitHub)")
+        for login in sorted(logins):
+            print(f"  {login}")
+            for contact, n in ids.contacts[login].most_common():
+                print(f"    {n:5}  {contact}")
+    unknown = [login for login in ids.unknown]
+    if unknown:
+        print("\nNon identifiés (absents du mailmap) :")
+        for login in sorted(unknown, key=str.lower):
+            print(f"  {login}")
+            for contact, n in ids.contacts[login.lower()].most_common():
+                print(f"    {n:5}  {contact}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Pratiques d'équipe sur GitHub : pull requests, revues et pushes sur les branches protégées.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+Verdicts : ✗ majeur, ⚠ à corriger, ✓ respecté, · information, – sans objet.
+Règles : push, force, revision, ci, approve, revue, perimee, concentration, ticket.
+
+Identités : les logins GitHub sont reliés aux courriels de leurs commits, puis au
+.mailmap, comme dans git-teamwork. Un login sans commit se déclare par son courriel
+noreply : Prénom Nom <prenom@ecole.example> <12345+login@users.noreply.github.com>
+Avec --mailmap, ce fichier est aussi la liste de l'équipe.
+
+Plusieurs dépôts (ex. frontend et backend) sont analysés ensemble, comme un seul projet.
+
+Exemples :
+  gh teamwork
+  gh teamwork ~/src/equipe-1 --mailmap ~/src/equipe-1.mailmap
+  gh teamwork ~/src/equipe-2-front ~/src/equipe-2-back --until beta-v1 -v
+  gh teamwork --ignore ticket,ci
+  gh teamwork --identities""",
+    )
+    parser.add_argument("repos", nargs="*", default=["."], metavar="repo",
+                        help="chemin d'un clone local, répétable : ils sont analysés ensemble (défaut : .)")
+    parser.add_argument("-b", "--branch", action="append",
+                        help="branche protégée, répétable (défaut : la branche par défaut, plus dev ou develop)")
+    parser.add_argument("--since", help="date de début (AAAA-MM-JJ) ou étiquette Git")
+    parser.add_argument("--until", help="date de fin, incluse (AAAA-MM-JJ), ou étiquette Git (ex. beta-v1)")
+    parser.add_argument("--mailmap", help="fichier .mailmap supplémentaire, qui sert aussi de liste de l'équipe")
+    parser.add_argument("--ignore", action="append", default=[], metavar="RÈGLE",
+                        help="ne pas évaluer ces règles, séparées par des virgules, répétable")
+    parser.add_argument("--exclude-author", action="append", default=[], metavar="REGEX",
+                        help="ignorer les logins correspondants (ex. le compte du professeur), répétable")
+    parser.add_argument("--exclude-file", action="append", default=[], metavar="PATTERN",
+                        help="exclure aussi ces fichiers du compte de lignes des PR, répétable")
+    parser.add_argument("--no-default-excludes", action="store_true",
+                        help="ne pas exclure les fichiers générés connus (lock, node_modules, etc.)")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="lister les PR et les pushes en cause, avec leur lien")
+    parser.add_argument("--identities", action="store_true",
+                        help="lister les logins et les courriels regroupés sous chaque élève, pour écrire le .mailmap")
+    args = parser.parse_args()
+
+    args.ignore = {r.strip() for value in args.ignore for r in value.split(",") if r.strip()}
+    if unknown_rules := args.ignore - set(RULES):
+        sys.exit(f"Règle inconnue : {', '.join(sorted(unknown_rules))}. Règles : {', '.join(RULES)}.")
+
+    repos = [Path(p).expanduser().resolve() for p in args.repos]
+    config, roster, mailmap_files = [], None, [r / ".mailmap" for r in repos if (r / ".mailmap").is_file()]
+    if args.mailmap:
+        mailmap = Path(args.mailmap).expanduser().resolve()
+        roster = gt.read_roster(mailmap)
+        if not roster:
+            sys.exit(f"Aucun élève dans {mailmap}.")
+        mailmap_files.append(mailmap)
+    # Un seul .mailmap combiné : chaque dépôt peut avoir le sien
+    combined = tempfile.NamedTemporaryFile("w", suffix=".mailmap", delete=False)
+    combined.write("\n".join(f.read_text() for f in mailmap_files))
+    combined.close()
+    config = [f"mailmap.file={combined.name}"]
+
+    args.since_dt = parse_bound(args.since, repos[0], end=False)
+    args.until_dt = parse_bound(args.until, repos[0], end=True)
+
+    ids = Identities(roster, args.exclude_author)
+    prs, pushes, issues, sources = [], [], 0, []
+    args.slugs, args.protection, protected_all = [], {}, set()
+    try:
+        for repo in repos:
+            owner, name = github_slug(repo)
+            slug = f"{owner}/{name}"
+            args.slugs.append(slug)
+            info = graphql(REPO_QUERY, owner=owner, name=name)["repository"]
+            default = (info["defaultBranchRef"] or {}).get("name", "main")
+            issues += info["issues"]["totalCount"]
+            protected = args.branch or [default] + [b for b in EXTRA_PROTECTED
+                                                    if gt.ref_exists(repo, f"origin/{b}") or gt.ref_exists(repo, b)]
+            protected_all.update(protected)
+            for branch in protected:
+                for node in graphql_nodes(HISTORY_QUERY, ["repository", "ref", "target", "history"],
+                                          owner=owner, name=name, ref=f"refs/heads/{branch}"):
+                    ids.add_commit(node["author"])
+                key = branch if len(repos) == 1 else f"{name}:{branch}"
+                args.protection[key] = read_protection(owner, name, branch)
+            prs += read_prs(owner, name, args, ids)
+            repo_pushes, first_day = read_pushes(repo, owner, name, protected)
+            pushes = None if repo_pushes is None or pushes is None else pushes + repo_pushes
+            sources.append((slug, protected, first_day))
+    except GhError as e:
+        sys.exit(f"Erreur gh : {e}")
+    args.protected = sorted(protected_all)
+    args.merge_oids = {p["merge_oid"] for p in prs if p["merge_oid"]}
+
+    # Chaque action (PR ouverte, revue, commentaire, push) d'un compte humain
+    actions = collections.Counter()
+    for p in prs:
+        for actor in [p["author"], *(r["author"] for r in p["reviews"]), *(c["author"] for c in p["comments"])]:
+            if actor and actor.get("login") and not is_bot(actor, args.exclude_author):
+                actions[actor["login"]] += 1
+    for push in pushes or []:
+        if push["actor"] and not is_bot(push["actor"], args.exclude_author):
+            actions[push["actor"]["login"]] += 1
+    logins = set(ids.contacts) | {login.lower() for login in actions}
+    ids.resolve(repos[0], config, mailmap_files, logins)
+    Path(combined.name).unlink()
+    for login, count in actions.items():
+        if login.lower() not in ids.students:
+            ids.unknown[login] += count
+
+    if args.identities:
+        print_identities(ids)
+        return
+
+    students, rows, stats = analyse(prs, pushes, set(protected_all), ids, args)
+    active = {k: s for k, s in students.items()
+              if roster is not None or s["pr"] or s["push"] or s["reviews"]}
+    n = len(active)
+    color = sys.stdout.isatty()
+
+    for slug, protected, first_day in sources:
+        print(f"{slug} | branches protégées : {', '.join(protected)}"
+              + (f" | depuis {first_day}" if first_day else ""))
+    if args.since or args.until:
+        print(f"Période : {args.since or '…'} → {args.until or '…'}")
+    merged = stats["merged"]
+    parts = [f"{len(stats['regular'])} fusionnées"]
+    if stats["delivery"]:
+        parts.append(plural(len(stats["delivery"]), "livraison"))
+    if stats["by_bot"]:
+        parts.append(f"{len(stats['by_bot'])} par une IA")
+    if stats["by_unknown"]:
+        parts.append(f"{len(stats['by_unknown'])} par des non identifiés")
+    if stats["unmerged"]:
+        parts.append(f"{len(stats['unmerged'])} non fusionnée{'s' if len(stats['unmerged']) > 1 else ''}")
+    total_prs = len(merged) + len(stats["unmerged"])
+    push_text = ("activité inaccessible" if pushes is None
+                 else f"{plural(len(rows['push']), 'push', 'es')} direct{'s' if len(rows['push']) > 1 else ''}"
+                 + (f" (+{stats['setup']} de mise en place)" if stats["setup"] else ""))
+    print(f"{plural(n, 'élève')} | {total_prs} PR : {', '.join(parts)} | {push_text}\n")
+
+    if ids.unknown:
+        print("Non identifiés (absents du mailmap, non comptés) : "
+              + ", ".join(f"{login} ({n})" for login, n in ids.unknown.most_common()))
+        print()
+
+    print_rules(evaluate(active, rows, stats, issues, n, args), color)
+    print()
+    print_students(list(active.values()), color)
+    if n >= 3 and stats["matrix"]:
+        print_matrix(active, stats["matrix"])
+    print_timeline([("PR fusionnées", [p["merged"].date() for p in stats["regular"]]),
+                    ("Push direct", [p["at"].date() for p in rows["push"]])],
+                   args.since_dt, args.until_dt)
+    if args.verbose:
+        print_details(students, rows, args)
+
+
+if __name__ == "__main__":
+    main()
